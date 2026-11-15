@@ -143,6 +143,58 @@ Results include:
 
 **Console (`console/`, `cli.py`).** Standard-library HTTP server with a background job worker, token auth, and a live dashboard (device map, calibration, link, jobs, runs, event log, BER fault injection). The `aura` CLI provides `info`, `compile`, `calibrate`, `run`, `console`, `link-loopback` and `selftest`.
 
+## 3a. Iterative decoding and RL-BP (`src/aura/decoding/`)
+
+Reference models for the Layer-3 decoder, used by the `bposd` and `rlbp`
+decoder stand-ins.
+
+**Tanner graph.** One check per detector of the memory basis and one variable
+per DEM mechanism (hyperedges included, so BB codes decode natively).
+Mechanisms that flip no detector, or that have p ∉ (0, ½), are dropped.
+
+**Min-sum BP (`bp.py`).** Normalised min-sum (α = 0.75) uses the min1/min2 trick.
+It is batched over shots, and the active set shrinks every iteration.
+
+- **Iteration control:**
+  - zero-syndrome shots cost 0 iterations;
+  - a shot exits at the first iteration whose hard decision satisfies its syndrome (`EXIT_CONVERGED`);
+  - an optional halting policy can stop a shot early (`EXIT_HALTED`);
+  - otherwise the shot stops at `max_iter` (`EXIT_MAX_ITER`, i.e. WCET).
+- **Implementation:** arrays are laid out as (edges × shots), so gathers are row gathers. All per-iteration temporaries live in a preallocated workspace (fresh multi-MB temporaries page-fault on every iteration). Per-variable sums and the syndrome check are `scipy.sparse` products. These changes are ~3× faster than the naive version, with bit-identical output.
+
+**OSD-0 (`osd.py`).** Columns are inserted in posterior-reliability order into an
+incremental GF(2) basis, using Python ints as bitsets. Insertion stops as soon as
+the syndrome lies in the span. This is exact OSD-0, and usually touches only a
+short prefix of the columns (~0.25 ms per BB-72 shot).
+
+**RL halting policy (`policy.py`).** The MDP is defined as follows:
+
+- **Episode:** one shot. **Decision:** after each BP iteration.
+- **State:** the iteration bucket; the residual unsatisfied-check count; the residual/initial syndrome-weight ratio; and the iterations since the best residual last improved. 1,320 discrete states.
+- **Actions:** CONTINUE or HALT (→ OSD).
+- **Reward:** −(iterations · c_iter + fallback · c_osd + logical error · c_fail). The constants come from the lab's latency model (`bp_iter_ns`, `osd_ns`) and `--fail-cost`. The policy therefore minimises modelled decoder latency subject to accuracy.
+
+Two training methods are available:
+
+- **`fqi` (default), batch RL.** BP's trajectory is independent of the agent's actions until it halts. Each episode is therefore recorded once up to `max_iter`, together with the OSD outcome at every possible halting point. Value iteration on the empirical MDP then gives the optimal policy for the state abstraction. Logical failures are rare, high-cost events, which makes online exploration very noisy; this method avoids that.
+- **`online`.** Tabular ε-greedy Q-learning against the live BP engine. It works, but is noticeably noisier than `fqi`.
+
+Episodes come either from the DEM or from recorded device shots (detection
+events plus the measured logical flips). The second source lets the policy adapt
+to noise the DEM omits: leakage, crosstalk and drift.
+
+**What it buys, measured honestly.**
+
+- **Versus a fixed budget of 30 iterations:** RL-BP cuts BP iterations by 36–65 % and the p99 from 30 to 3–12 on surface codes, at equal LER. On BB-72 it *lowers* LER: halting and using OSD beats letting BP converge to a wrong degenerate solution.
+- **Versus a hand-tuned fixed cap:** the learned policy roughly *ties* the best fixed cap; it does not clearly beat it. On BB-72 the LER is non-monotonic in the cap (5 → 2.87 %, 10 → 3.61 %, 30 → 3.22 %), so a cap must be re-tuned per code, noise level and cost model.
+- **Where the RL's value lies:** it finds the right operating point automatically, and it retrains from device data.
+- **Training size matters:** a policy trained on ≲ 8k episodes is more aggressive (fewer iterations, slightly higher LER). Use more episodes or a larger `fail_cost` to buy accuracy back.
+
+**Latency model in the twin.** For the iterative decoders, latency is
+`decoder_latency_ns + bp_iter_ns × iterations + osd_ns × [fallback]`. The COR
+status bits report CONVERGED, FALLBACK (OSD used) and WCET_FORCED (budget
+exhausted).
+
 ## 4. AURA-Link (`src/aura/link/`)
 
 See `AURA_LINK_SPEC.md`.
@@ -169,7 +221,9 @@ specific control stack.
 | Workload | Wall-clock |
 |---|---|
 | surface-3, stream mode (full stack) | ~13 ms per shot |
-| surface-3, batch mode | ~22k shots/s (sampling), ~7k shots/s with software MWPM decoding |
+| surface-3, batch mode | ~22k shots/s (sampling); decoding is now vectorised (`decode_batch`) for every decoder |
+| detection events / observable flips | one cached sparse product per call (BB-72: 1.4 ms → 12 µs per shot) |
+| BP+OSD, BB-72 r=6 (DEM samples) | ~700 shots/s on one core |
 | BB [[72,12,6]], stream mode | ~150 ms per shot |
 | BB [[72,12,6]], batch mode | ~1.6k shots/s |
 | full calibration of surface-3 (17 qubits, 24 couplers) | ~15 s wall, 22 s virtual lab time |

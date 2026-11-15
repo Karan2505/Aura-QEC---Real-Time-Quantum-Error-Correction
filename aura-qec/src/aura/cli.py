@@ -4,7 +4,8 @@
   aura info                                   codes, device profiles, versions
   aura compile  --code surface:5 --rounds 5   compile and inspect a QEC experiment
   aura calibrate [--config lab.toml] [--mode full|maintain|oracle]
-  aura run       [--config lab.toml] --rounds 3 --shots 500 --decoder matching --mode stream
+  aura run       [--config lab.toml] --rounds 3 --shots 500 --decoder matching|bposd|rlbp --mode stream
+  aura train-decoder --code surface:5 --rounds 5 --out rlbp.json   train the RL-BP halting policy
   aura console   [--config lab.toml] [--port 8765] [--token SECRET]
   aura link-loopback --shots 200              AURA-Link over real UDP sockets
   aura selftest                               fast end-to-end sanity check
@@ -98,6 +99,8 @@ def cmd_run(args) -> int:
         lab.store.load(args.load_calibration)
     else:
         print("calibrating:", lab.calibrate(args.calibration)["actions"])
+    if args.policy:
+        lab.cfg.rlbp_policy = args.policy
     exp = lab.experiment(rounds=args.rounds, basis=args.basis, branching=args.branching)
     res = lab.run(exp, shots=args.shots, decoder=args.decoder, mode=args.mode)
     print(res.summary())
@@ -106,6 +109,58 @@ def cmd_run(args) -> int:
     if args.out:
         Path(args.out).write_text(res.to_json())
         print(f"results written to {args.out}")
+    return 0
+
+
+def cmd_train_decoder(args) -> int:
+    """Train the RL-BP halting policy and compare it with plain BP+OSD on held-out shots."""
+    import numpy as np
+    from .decoding import (MinSumBP, RewardModel, TannerGraph, dem_episodes, evaluate, shot_episodes,
+                           train_q_policy)
+    lab = _lab(args)
+    if args.load_calibration:
+        lab.store.load(args.load_calibration)
+    else:
+        print("calibrating:", lab.calibrate(args.calibration)["actions"])
+    ce = lab.compile(lab.experiment(rounds=args.rounds, basis=args.basis))
+    pm = ce.manifest.patches[0]
+    keep = [i for i, b in enumerate(pm.det_basis) if b == pm.basis]
+    bp = MinSumBP(TannerGraph(pm.dem.restrict(keep)), max_iter=lab.cfg.bp_max_iter)
+    rm = RewardModel(osd_cost=lab.cfg.osd_ns / lab.cfg.bp_iter_ns, fail_cost=args.fail_cost)
+    if args.source == "device":
+        # episodes from shots of the (virtual) device itself: real noise incl. drift,
+        # leakage and crosstalk that the DEM leaves out; labels are the measured logical flips
+        lab.qpu.upload_settings(ce.settings)
+        lab.qpu.load_program(ce.qpu_program)
+        out = lab.qpu.run_batch(args.episodes + args.eval_shots, t_start_ps=lab.sim.now)
+        bits = np.zeros((len(out["iq"]), ce.num_acq), np.uint8)
+        for a, q in enumerate(ce.lowered.acq_qubit):
+            bits[:, a] = ce.discriminators[q].classify(out["iq"][:, a])[0]
+        det = pm.detection_events(bits)[:, keep]
+        obs = pm.observable_flips(bits)
+        tr_src = shot_episodes(det[:args.episodes], obs[:args.episodes])
+        ev_s, ev_o = det[args.episodes:], obs[args.episodes:]
+    else:
+        tr_src = dem_episodes(bp.g)
+        _, ev_s, ev_o = bp.g.sample(args.eval_shots, np.random.default_rng(args.seed + 1))
+    t0 = time.perf_counter()
+    pol, rep = train_q_policy(bp, tr_src, method=args.method, episodes=args.episodes, reward=rm, seed=args.seed)
+    print(rep.summary())
+    print(f"trained in {time.perf_counter() - t0:.1f} s on {args.source} episodes; "
+          f"evaluating on {len(ev_s)} held-out shots")
+    base = evaluate(bp, ev_s, ev_o, None, rm)
+    rl = evaluate(bp, ev_s, ev_o, pol, rm)
+    for name, r in (("BP+OSD", base), ("RL-BP", rl)):
+        print(f"  {name:7s} mean iterations {r['mean_iterations']:.2f} (non-trivial {r['mean_iterations_nontrivial']:.2f})"
+              f"  p99 {r['p99_iterations']:.0f}  OSD fallback {r['fallback_rate']:.3f}  "
+              f"LER {r['ler']:.4f} ({r['logical_errors']})")
+    if base["total_iterations"]:
+        print(f"  iterations saved: {100 * (1 - rl['total_iterations'] / base['total_iterations']):.1f} %")
+    pol.meta.update(code=pm.code_name, basis=pm.basis, rounds=pm.rounds, source=args.source,
+                    config_epoch=ce.config_epoch, eval={"bposd": base, "rlbp": rl})
+    if args.out:
+        pol.save(args.out)
+        print(f"policy written to {args.out} (use: aura run --decoder rlbp --policy {args.out})")
     return 0
 
 
@@ -184,13 +239,31 @@ def main(argv=None) -> int:
     p.add_argument("--rounds", type=int, default=3)
     p.add_argument("--basis", default="Z", choices=["Z", "X"])
     p.add_argument("--shots", type=int, default=200)
-    p.add_argument("--decoder", default="matching", choices=["matching", "oracle", "null"])
+    p.add_argument("--decoder", default="matching", choices=["matching", "bposd", "rlbp", "oracle", "null"])
+    p.add_argument("--policy", help="saved RL-BP policy for --decoder rlbp (from 'aura train-decoder')")
     p.add_argument("--mode", default="stream", choices=["stream", "batch"])
     p.add_argument("--branching", action="store_true", help="append the decoder-conditioned feed-forward test")
     p.add_argument("--calibration", default="full", choices=["full", "oracle"])
     p.add_argument("--load-calibration", help="use a saved calibration snapshot instead of calibrating")
     p.add_argument("--out", help="write the full result JSON")
     p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("train-decoder", help="train the RL-BP halting policy (reinforcement learning)")
+    _add_lab_args(p)
+    p.add_argument("--rounds", type=int, default=3)
+    p.add_argument("--basis", default="Z", choices=["Z", "X"])
+    p.add_argument("--source", default="dem", choices=["dem", "device"],
+                   help="episodes from the detector error model or from shots of the virtual device")
+    p.add_argument("--method", default="fqi", choices=["fqi", "online"],
+                   help="fitted Q-iteration (batch RL, default) or online epsilon-greedy Q-learning")
+    p.add_argument("--episodes", type=int, default=20000)
+    p.add_argument("--eval-shots", type=int, default=20000)
+    p.add_argument("--fail-cost", type=float, default=2000.0,
+                   help="penalty of one logical error, in BP-iteration equivalents")
+    p.add_argument("--calibration", default="oracle", choices=["full", "oracle"])
+    p.add_argument("--load-calibration", help="use a saved calibration snapshot instead of calibrating")
+    p.add_argument("--out", help="write the trained policy (JSON)")
+    p.set_defaults(fn=cmd_train_decoder)
 
     p = sub.add_parser("console", help="serve the operations console")
     _add_lab_args(p)

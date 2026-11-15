@@ -8,6 +8,12 @@ drift_speedup = 1.0         # 1 = realistic drift time scales
 cosmic_rays = true
 decoder_latency_ns = 400.0  # stand-in decoder: fixed latency ...
 decoder_per_event_ns = 20.0 # ... plus per detection event
+# iterative decoders (--decoder bposd | rlbp): base + bp_iter_ns * iterations + osd_ns * [OSD fallback]
+bp_max_iter = 30
+bp_iter_ns = 20.0
+osd_ns = 400.0
+rlbp_policy = ""            # policy from 'aura train-decoder --out ...'; empty = train from the DEM
+rlbp_train_episodes = 4000
 
 [[lab.patches]]
 patch_id = 0
