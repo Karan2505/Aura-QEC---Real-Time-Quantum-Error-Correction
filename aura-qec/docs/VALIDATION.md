@@ -1,6 +1,6 @@
 # Validation evidence
 
-Reproduce everything with `python -m pytest tests` (106 tests, ~45 s on one
+Reproduce everything with `python -m pytest tests` (120 tests, ~80 s on one
 core) and the scripts in `examples/`. Stim and PyMatching are used **only**
 as independent oracles in the tests; they are not runtime dependencies.
 
@@ -19,6 +19,21 @@ as independent oracles in the tests; they are not runtime dependencies.
 | Readout physics | decay-induced P(0|1) matches the analytic 1 − exp(−τ/2T1) within 1.5e-3; the |2> blob is identified > 99 % | `test_qpu.py::test_readout_physics_assignment_errors` |
 | Lindblad engine | Rabi angles, T1 decay, Ramsey fringes and ef transitions match analytic formulas; CZ conditional and dynamic phases; Repeat and Twirled blocks exact | `test_physics.py` |
 | Below threshold | LER per round 0.43 % → 0.24 % → 0.12 % for d = 3, 5, 7 (`sota`, MWPM) | `examples/02_threshold_scan.py` |
+
+## Iterative decoding and RL-BP (`tests/test_decoding.py`)
+
+| Claim | Evidence |
+|---|---|
+| Tanner-graph syndromes are exact | they match the dense DEM check matrix |
+| Zero-syndrome shots cost 0 iterations | all exit as `EXIT_TRIVIAL` |
+| BP exits at the first converging iteration | single faults converge within ≤ 5 iterations of a 50-iteration budget; converged decisions explain their syndromes |
+| OSD fallback covers BP's failure modes | short-cycle oscillation and exact ties are resolved by OSD-0, which solves every explainable syndrome and recovers the logical effect of the true fault when the posterior points at it |
+| BP+OSD is a real decoder | LER within 25 % of MWPM on surface-3 (in practice equal, 1.43 % vs 1.45 %) |
+| RL policy saves compute without losing accuracy | > 30 % fewer iterations, lower p99, logical errors within 3σ of BP+OSD on the same shots (surface-5) |
+| Policies persist | save/load round trip; incompatible files are rejected |
+| Batch decoding equals per-shot decoding | `decode_batch` agrees with `decode` for every decoder |
+| Lab integration | `bposd`/`rlbp` in batch and stream mode; feed-forward with RL-BP: 0 timeouts, flag = decision in 100 % |
+| Vectorised parity extraction is exact | bit-identical to the reference loop for arbitrary leading shapes |
 
 ## Calibration (recovering hidden truth from measurements only)
 
@@ -62,6 +77,7 @@ Maintenance after bring-up costs ~1 s of lab time instead of 22 s. The tests are
 | Credits | a slow consumer is protected: no FIFO overflow, shots throttled at shot boundaries |
 | Management ARQ | the decoder configuration transfers over a bursty lossy link |
 | Real network | UDP loopback: 400/400 frames, 100/100 corrections, 0 erasures (`test_lab.py::test_udp_loopback_over_real_sockets`) |
+| Real network on Windows | Python < 3.13 backs `time.monotonic` with GetTickCount64 (15.6 ms resolution). This used to quantise every timestamp and make the time-sync servo diverge (offset → 1e41 ps, RTT 200–800 ms, test failure). Three fixes: `RealtimeScheduler` now uses `perf_counter_ns`; the PI servo has integrator anti-windup and an interval floor; in-flight exchanges are discarded after a phase step. Result: PASS, RTT ≈ 2 ms, offset within the 500 µs software-timestamping lock window |
 | Console | token auth, validation, job execution, run retrieval, dashboard served (`test_lab.py::test_console_api`) |
 
 ## Known model limitations (measured, not hidden)
