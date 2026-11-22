@@ -7,3 +7,4 @@ dfx_runtime.txt
 *.jou
 .Xil/
 vitis_hls.log
+.hls.failed
