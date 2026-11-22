@@ -133,6 +133,9 @@ class VirtualLab:
     @classmethod
     def from_file(cls, path: str) -> "VirtualLab":
         d = load_file(path)
+        unknown = set(d) - {"lab", "link", "control", "calibration"}
+        if unknown:
+            raise ConfigError(f"{path}: unknown section(s) {sorted(unknown)}; expected lab, link, control, calibration")
         lab = from_dict(LabConfig, d.get("lab", {}))
         link = from_dict(LinkConfig, d["link"]) if "link" in d else None
         ctl = from_dict(ControlTiming, d["control"]) if "control" in d else None

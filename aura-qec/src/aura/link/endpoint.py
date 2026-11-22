@@ -654,6 +654,7 @@ class IngressGateway(LinkEndpoint):
         self._round_sizes: dict[int, list[int]] = {}
         self._credit_base = 0
         self._last_credit_sent = 0
+        self._released = 0          # SYNs of this session consumed without entering the FIFO (erased)
         self._pending_epoch = 0
         self._last_close_ps = -(1 << 62)
 
@@ -756,8 +757,10 @@ class IngressGateway(LinkEndpoint):
                                                        name=f"seq.p{pm.patch_id}", patch=pm.patch_id)
                           for pm in man.patches}
         self._round_sizes = {pm.patch_id: [len(a) for a in pm.round_acqs] for pm in man.patches}
-        self._credit_base = self.fifo.popped
+        # records still queued from the previous session must not count as credits for this one
+        self._credit_base = self.fifo.popped + len(self.fifo)
         self._last_credit_sent = self.fifo.popped
+        self._released = 0
         self._hello_ack(F.HELLO_OK)
         self._set_state(LinkState.SYNCING, "hello accepted")
         self._start_keepalive()
@@ -814,13 +817,17 @@ class IngressGateway(LinkEndpoint):
         rec = SyndromeRecord(patch=h.patch, shot=h.shot, round=h.round, bits=bits, soft=soft, leak=leak,
                              flags=h.flags, origin_ts=h.origin_ts, seq=h.seq, sof_ts=pf.rxf.sof_ts,
                              late=pf.rxf.ctx.get("seq_status") == "late")
+        if rec.late:
+            # its gap erasure already returned this frame's credit; it is returned again when popped
+            self._released -= 1
         if self.ts_slave.locked:
             self.m.histogram("syn.meas_to_arrival_ps").record(max(0, rec.sof_ts - rec.origin_ts))
         self.fifo.push(rec)
 
     def _rx_error(self, reason: str, h: Optional[Header], rxf: RxFrame) -> None:
         if h is not None and h.type == FrameType.SYN and self.state == LinkState.UP \
-                and rxf.ctx.get("seq_status") in ("ok", "reordered", "late"):
+                and rxf.ctx.get("seq_status") in ("ok", "reordered"):
+            # ("late" frames were already reported as a gap erasure: report each round once)
             # header was good: we know exactly which round was lost
             tr = self._trackers.get(h.patch)
             if tr is not None:
@@ -830,6 +837,9 @@ class IngressGateway(LinkEndpoint):
 
     def _erasure(self, e: ErasureRecord) -> None:
         self.m.counter("erasures").inc()
+        # every erasure stands for exactly one SYN that never occupies the FIFO (lost, corrupt,
+        # layout mismatch, overflow): return its credit, or lost frames would shrink the window for good
+        self._released += 1
         if self.sink is not None:
             self.sink.on_erasure(e)
 
@@ -847,7 +857,7 @@ class IngressGateway(LinkEndpoint):
 
     # ------------------------------------------------------------ credits
     def _credit_limit(self) -> int:
-        return (self.fifo.popped - self._credit_base + self.cfg.fifo_capacity) & 0xFFFFFFFF
+        return (self.fifo.popped + self._released - self._credit_base + self.cfg.fifo_capacity) & 0xFFFFFFFF
 
     def _on_pop(self, popped: int) -> None:
         if popped - self._last_credit_sent >= self.cfg.credit_update_every or len(self.fifo) == 0:

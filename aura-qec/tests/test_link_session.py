@@ -133,3 +133,20 @@ def test_corrections_flow_back_to_the_control_system():
     sim.run(until_ps=sim.now + 20 * US)
     assert [(g.shot, int(g.obs_flips[0])) for g in got] == [(s, s % 2) for s in range(5)]
     assert all(0 < g.arrival_ts - g.origin_ts < 200 * NS for g in got)
+
+
+def test_credits_return_for_erased_frames():
+    """Lost / corrupt SYN frames must give their credit back, or a noisy link
+    shrinks the window until it deadlocks."""
+    sim, link, col, ce = up_link()
+    c, g = link.control, link.gateway
+    full = c.credits_available
+    link.set_impairments(down=Impairments(ber=2e-4))
+    sent = stream_rounds(sim, link, ce, shots=150)
+    sim.run(until_ps=sim.now + 2000 * US)
+    link.set_impairments(down=Impairments(ber=0))
+    sim.run(until_ps=sim.now + 200 * US)
+    assert col.eras, "test needs some erasures"
+    assert len(col.recs) + len(col.eras) == len(sent)
+    assert len(g.fifo) == 0
+    assert c.credits_available == full

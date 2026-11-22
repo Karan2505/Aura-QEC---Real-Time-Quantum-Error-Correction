@@ -5,38 +5,117 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AURA-QEC Ops Console</title>
 <style>
-:root{--bg:#f6f7f9;--card:#ffffff;--ink:#16202c;--muted:#5b6675;--line:#dfe3e8;--accent:#0e8c7f;--warn:#c6621b;--bad:#b3261e;--ok:#1a7f37;--navy:#12233f;--x:#6d4bd8;--z:#0e8c7f;--d:#12233f}
-@media (prefers-color-scheme:dark){:root{--bg:#0e1319;--card:#161d26;--ink:#e6ebf1;--muted:#98a4b3;--line:#2a3441;--navy:#9fb4d6;--d:#9fb4d6}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
-h1{font-size:17px;margin:0;letter-spacing:.2px}h1 span{color:var(--muted);font-weight:500}
-main{padding:16px 20px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));max-width:1500px;margin:0 auto}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
-.card h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 10px}
-.wide{grid-column:1/-1}.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px}.kv b{font-weight:600;font-variant-numeric:tabular-nums}
+:root{
+  --bg:#f3f5f8;--card:#ffffff;--card2:#f8fafc;--ink:#14202e;--muted:#5e6a79;--line:#e1e6ec;
+  --accent:#0e8c7f;--accent-ink:#ffffff;--warn:#b8641a;--bad:#b3261e;--ok:#1a7f37;
+  --d:#2f5fb3;--x:#7a52e0;--z:#0e9384;
+  --chip:#0d1726;--chip2:#13213a;--chip-grid:rgba(120,160,220,.08);--chip-edge:rgba(140,175,230,.22);--chip-ink:#c9d6ea;--chip-muted:#7d8ea8;
+  --shadow:0 1px 2px rgba(16,24,40,.05),0 4px 14px rgba(16,24,40,.05);
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0b1016;--card:#121a24;--card2:#0f161f;--ink:#e5ebf2;--muted:#94a1b2;--line:#253041;
+  --accent:#22b3a3;--accent-ink:#04201c;--warn:#e19a4c;--bad:#ef6b62;--ok:#4cc47a;
+  --d:#7aa2ec;--x:#a98bf5;--z:#33c2b2;
+  --chip:#070c14;--chip2:#0d1626;--shadow:none;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
+.brand{display:flex;align-items:center;gap:10px}
+.brand svg{width:28px;height:28px}
+h1{font-size:16px;margin:0;letter-spacing:.2px}h1 span{color:var(--muted);font-weight:500}
+.hstat{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chipstat{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border:1px solid var(--line);border-radius:99px;font-size:12px;color:var(--muted);background:var(--card2);font-variant-numeric:tabular-nums}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 20%,transparent)}
+.dot.warn{background:var(--warn);animation:pulse 1.4s infinite}.dot.bad{background:var(--bad)}
+@keyframes pulse{50%{opacity:.35}}
+main{padding:16px 20px 28px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));max-width:1500px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow);min-width:0}
+.card h2{font-size:11.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin:0 0 10px;font-weight:650}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px}.card-head h2{margin:0}
+.wide{grid-column:1/-1}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:5px 14px}.kv b{font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;box-shadow:var(--shadow)}
+.kpi small{display:block;font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+.kpi b{display:block;font-size:22px;font-weight:650;margin-top:2px;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.kpi em{font-style:normal;font-size:12px;color:var(--muted)}
 .pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid var(--line)}
 .UP,.done{color:var(--ok);border-color:var(--ok)}.SYNCING,.CONNECTING,.CONFIGURING,.running,.queued{color:var(--warn);border-color:var(--warn)}.DOWN,.FAILED,.failed{color:var(--bad);border-color:var(--bad)}
-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line);font-size:13px}th{color:var(--muted);font-weight:600}
-form{display:flex;flex-wrap:wrap;gap:8px;align-items:end}label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:3px}
-input,select,button{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}input{width:90px}
-button{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;cursor:pointer}button.sec{background:transparent;color:var(--ink)}
-button:disabled{opacity:.5;cursor:default}#map{width:100%;height:320px;display:block}
-.log{font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;max-height:260px;overflow:auto;white-space:pre-wrap;color:var(--muted)}
-.legend{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-top:6px}.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
-.muted{color:var(--muted)}.err{color:var(--bad)}
+.tablewrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:top}th{color:var(--muted);font-weight:600;font-size:12px}
+tbody tr:hover{background:var(--card2)}
+a{color:var(--accent)}
+form{display:flex;flex-wrap:wrap;gap:10px;align-items:end}label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:3px}
+input,select,button{font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:var(--card2);color:var(--ink)}input{width:96px}
+input:focus,select:focus,button:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 55%,transparent);outline-offset:1px}
+button{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600;cursor:pointer}button.sec{background:transparent;color:var(--ink);border-color:var(--line)}
+button:hover{filter:brightness(1.06)}button:disabled{opacity:.5;cursor:default}
+.log{font:12px/1.55 ui-monospace,Menlo,Consolas,monospace;max-height:260px;overflow:auto;white-space:pre-wrap;color:var(--muted)}
+.muted{color:var(--muted)}.err{color:var(--bad);margin-top:6px}
+
+/* ---- chip view ---- */
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;padding:2px;background:var(--card2)}
+.seg button{background:transparent;border:0;color:var(--muted);padding:4px 10px;border-radius:7px;font-size:12.5px;font-weight:600}
+.seg button[aria-pressed="true"]{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.chip-wrap{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:14px}
+@media (max-width:900px){.chip-wrap{grid-template-columns:1fr}}
+.chip-stage{background:radial-gradient(120% 90% at 30% 0%,var(--chip2),var(--chip));border-radius:12px;padding:6px;border:1px solid #1d2b44;position:relative;overflow:hidden}
+#map{width:100%;display:block;min-height:260px}
+#map .cp{stroke-linecap:round;transition:opacity .15s}
+#map .q{cursor:pointer}
+#map .q .core{transition:r .15s}
+#map .q text{fill:var(--chip-ink);font:600 9.5px system-ui,sans-serif;pointer-events:none;text-anchor:middle}
+#map.focus .cp:not(.hl){opacity:.12}
+#map.focus .q:not(.hl):not(.sel){opacity:.35}
+#map .q.sel .halo,#map .q.hl .halo{opacity:1}
+#map .halo{opacity:0;transition:opacity .15s}
+.chip-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--chip-muted);font-size:13px}
+.chip-side{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-size:13px;min-width:0}
+.chip-side h3{margin:0 0 2px;font-size:15px}
+.chip-side .role{font-size:12px;color:var(--muted);margin-bottom:10px}
+.chip-side .kv{gap:4px 12px;font-size:12.5px}
+.bar{height:6px;border-radius:99px;background:var(--line);overflow:hidden;margin:2px 0 8px}.bar i{display:block;height:100%;border-radius:99px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--muted);margin-top:10px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.ramp{display:inline-flex;align-items:center;gap:6px}.ramp span.g{width:120px;height:8px;border-radius:99px;display:inline-block}
 </style>
 </head>
 <body>
-<header><h1>AURA-QEC <span>Ops Console · Layer 0 + AURA-Link</span></h1><div id="clock" class="muted">connecting…</div></header>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="7" fill="#0d1726"/><g stroke="#33c2b2" stroke-width="1.6" stroke-linecap="round"><path d="M10 10L22 22M22 10L10 22" opacity=".55"/></g><circle cx="10" cy="10" r="3" fill="#7aa2ec"/><circle cx="22" cy="22" r="3" fill="#7aa2ec"/><circle cx="22" cy="10" r="3" fill="#a98bf5"/><circle cx="10" cy="22" r="3" fill="#33c2b2"/></svg>
+    <h1>AURA-QEC <span>Ops Console · Layer 0 + AURA-Link</span></h1>
+  </div>
+  <div class="hstat">
+    <span class="chipstat" id="hlink"><span class="dot"></span>link —</span>
+    <span class="chipstat" id="hcal"><span class="dot"></span>calibration —</span>
+    <span class="chipstat" id="clock"><span class="dot warn"></span>connecting…</span>
+  </div>
+</header>
 <main>
+  <div class="kpis wide" id="kpis"></div>
+
+  <section class="card wide">
+    <div class="card-head"><h2>Quantum chip</h2>
+      <div class="seg" id="metric" role="group" aria-label="colour qubits by">
+        <button data-m="role" aria-pressed="true">Role</button><button data-m="t1">T1</button><button data-m="ro">Readout error</button><button data-m="det">Detuning</button>
+      </div></div>
+    <div class="chip-wrap">
+      <div class="chip-stage"><svg id="map" role="img" aria-label="qubit and coupler layout"></svg><div class="chip-empty" id="mapempty">waiting for device…</div></div>
+      <aside class="chip-side" id="qinfo"></aside>
+    </div>
+    <div class="legend" id="legend"></div>
+  </section>
+
   <section class="card"><h2>Device</h2><div class="kv" id="device"></div></section>
   <section class="card"><h2>Calibration</h2><div class="kv" id="cal"></div>
-    <form onsubmit="return false" style="margin-top:10px">
+    <form onsubmit="return false" style="margin-top:12px">
       <button onclick="calib('full')">Full bring-up</button><button class="sec" onclick="calib('maintain')">Maintain</button><button class="sec" onclick="calib('oracle')" title="copies hidden truth; test mode">Oracle (test)</button>
     </form></section>
   <section class="card"><h2>AURA-Link</h2><div class="kv" id="link"></div></section>
-  <section class="card wide"><h2>Device map</h2><svg id="map" role="img" aria-label="qubit layout"></svg>
-    <div class="legend"><span><i style="background:var(--d)"></i>data</span><span><i style="background:var(--x)"></i>X ancilla</span><span><i style="background:var(--z)"></i>Z ancilla</span><span>ring = readout error (thicker = worse) · hover for details</span></div></section>
+
   <section class="card wide"><h2>Run experiment</h2>
     <form id="runform" onsubmit="submitRun(event)">
       <label>rounds<input name="rounds" type="number" min="1" value="3"></label>
@@ -50,41 +129,167 @@ button:disabled{opacity:.5;cursor:default}#map{width:100%;height:320px;display:b
       <label>link BER (down)<input id="ber" type="text" value="0"></label><button type="button" class="sec" onclick="setBer()">Apply</button>
     </form>
     <div id="formerr" class="err"></div></section>
-  <section class="card wide"><h2>Jobs</h2><table><thead><tr><th>id</th><th>kind</th><th>state</th><th>params</th><th>result</th></tr></thead><tbody id="jobs"></tbody></table></section>
-  <section class="card wide"><h2>Runs</h2><table><thead><tr><th>run</th><th>experiment</th><th>mode</th><th>decoder</th><th>shots</th><th>logical error rate</th></tr></thead><tbody id="runs"></tbody></table></section>
+  <section class="card wide"><h2>Jobs</h2><div class="tablewrap"><table><thead><tr><th>id</th><th>kind</th><th>state</th><th>params</th><th>result</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
+  <section class="card wide"><h2>Runs</h2><div class="tablewrap"><table><thead><tr><th>run</th><th>experiment</th><th>mode</th><th>decoder</th><th>shots</th><th>logical error rate</th></tr></thead><tbody id="runs"></tbody></table></div></section>
   <section class="card wide"><h2>Event log</h2><div class="log" id="log"></div></section>
 </main>
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=(v,d=3)=>v===null||v===undefined||Number.isNaN(v)?'—':(typeof v==='number'?(Math.abs(v)>=1e4||Math.abs(v)<1e-3&&v!==0?v.toExponential(2):v.toFixed(d)):esc(v));
+const pct=(v,d=2)=>v==null?'—':(v*100).toFixed(d)+' %';
 const kv=(el,rows)=>{el.innerHTML=rows.map(([k,v])=>`<span class="muted">${esc(k)}</span><b>${v}</b>`).join('')};
-async function api(path,opts){const r=await fetch(path,opts);const j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);return j}
-function drawMap(qs){const svg=$('map');if(!qs||!qs.length){svg.innerHTML='';return}
-  const xs=qs.map(q=>q.coords[0]),ys=qs.map(q=>q.coords[1]);const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
-  const W=svg.clientWidth||900,H=320,pad=24;const sx=v=>pad+(x1>x0?(v-x0)/(x1-x0):.5)*(W-2*pad),sy=v=>pad+(y1>y0?(v-y0)/(y1-y0):.5)*(H-2*pad);
-  const r=Math.max(3,Math.min(11,(W-2*pad)/Math.max(8,Math.sqrt(qs.length)*3)));const col={data:'var(--d)',x_ancilla:'var(--x)',z_ancilla:'var(--z)'};
-  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
-  svg.innerHTML=qs.map(q=>{const e=q.readout_err_est;const sw=e==null?0.8:Math.min(5,1+e*300);
-    const tip=`${q.name} (${q.role})\nT1 est ${fmt(q.t1_us_est,1)} µs · truth ${fmt(q.t1_us_true,1)} µs\nreadout err est ${fmt(e,4)}\ndetuning (truth) ${fmt(q.detuning_khz_true,1)} kHz\n${q.calibrated?'calibrated':'NOT calibrated'}`;
-    return `<circle cx="${sx(q.coords[0])}" cy="${sy(q.coords[1])}" r="${r}" fill="${col[q.role]||'gray'}" stroke="${q.calibrated?'var(--ok)':'var(--bad)'}" stroke-width="${sw}"><title>${esc(tip)}</title></circle>`}).join('')}
+// the console may require a token (aura console --token ...): open the page as /?token=... and every call carries it
+const TOKEN=new URLSearchParams(location.search).get('token');
+const withTok=p=>TOKEN?p+(p.includes('?')?'&':'?')+'token='+encodeURIComponent(TOKEN):p;
+async function api(path,opts={}){const h=Object.assign({},opts.headers||{});if(TOKEN)h['X-Aura-Token']=TOKEN;
+  const r=await fetch(path,Object.assign({},opts,{headers:h}));let j;try{j=await r.json()}catch(e){throw new Error(r.statusText||'bad response')}
+  if(!r.ok)throw new Error(j.error||r.statusText);return j}
+const post=(path,body)=>api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+
+// ------------------------------------------------------------------ chip view
+const ROLE={data:['var(--d)','data'],x_ancilla:['var(--x)','X ancilla'],z_ancilla:['var(--z)','Z ancilla'],spare:['#8893a3','spare']};
+// good -> bad colour ramp (teal, amber, red), readable on the dark chip substrate in both themes
+const RAMP=[[51,194,178],[230,180,70],[239,95,85]];
+function ramp(u){u=Math.max(0,Math.min(1,u));const s=u<.5?0:1,f=u<.5?u*2:(u-.5)*2;const a=RAMP[s],b=RAMP[s+1];
+  return `rgb(${a.map((x,i)=>Math.round(x+(b[i]-x)*f)).join(',')})`}
+const METRICS={
+  role:{label:'Role'},
+  t1:{label:'T1 (estimate)',get:q=>q.t1_us_est,unit:'µs',d:1,better:'high'},
+  ro:{label:'Readout error (estimate)',get:q=>q.readout_err_est,unit:'',d:4,better:'low'},
+  det:{label:'|Detuning| (truth)',get:q=>q.detuning_khz_true==null?null:Math.abs(q.detuning_khz_true),unit:'kHz',d:1,better:'low'},
+};
+const chip={dev:null,cal:null,calVer:null,qs:null,metric:'role',sel:null,hover:null,sig:'',pos:[],adj:[]};
+function metricScale(m){const v=chip.qs.map(q=>m.get(q)).filter(x=>x!=null&&isFinite(x));if(!v.length)return null;
+  let lo=Math.min(...v),hi=Math.max(...v);if(hi-lo<1e-12){hi=lo+1}
+  return x=>x==null||!isFinite(x)?null:(m.better==='high'?(hi-x)/(hi-lo):(x-lo)/(hi-lo))}
+function czScale(){const c=chip.cal&&chip.cal.couplers;if(!c)return null;const v=c.map(x=>x&&x.cz_error).filter(x=>x!=null&&isFinite(x));if(!v.length)return null;
+  const lo=Math.min(...v),hi=Math.max(...v);return x=>x==null?null:(hi-lo<1e-12?0:(x-lo)/(hi-lo))}
+function nodeFill(q){const m=METRICS[chip.metric];if(chip.metric==='role')return (ROLE[q.role]||ROLE.spare)[0];
+  const u=chip._scale&&chip._scale(m.get(q));return u==null?'#4a5568':ramp(u)}
+
+function drawChip(){
+  const svg=$('map'),dev=chip.dev,qs=chip.qs;
+  if(!dev||!qs||!qs.length){svg.innerHTML='';$('mapempty').style.display='grid';return}
+  $('mapempty').style.display='none';
+  const W=Math.max(320,svg.clientWidth||900);
+  const sig=[W,chip.metric,chip.calVer,JSON.stringify(qs)].join('|');if(sig===chip.sig)return;chip.sig=sig;
+  const P=dev.qubits;const xs=P.map(q=>q.coords[0]),ys=P.map(q=>q.coords[1]);
+  const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
+  const spanX=Math.max(x1-x0,1),spanY=Math.max(y1-y0,1),pad=34;
+  const H=Math.round(Math.min(560,Math.max(260,(W-2*pad)*spanY/spanX+2*pad)));
+  const s=Math.min((W-2*pad)/spanX,(H-2*pad)/spanY);
+  const ox=(W-s*spanX)/2,oy=(H-s*spanY)/2;
+  const X=v=>ox+(v-x0)*s,Y=v=>oy+(v-y0)*s;
+  chip.pos=P.map(q=>[X(q.coords[0]),Y(q.coords[1])]);
+  const n=P.length,r=Math.max(4,Math.min(13,s*0.32,(W/Math.sqrt(n))*0.12));
+  chip._scale=chip.metric==='role'?null:metricScale(METRICS[chip.metric]);
+  const cz=czScale(),calC=chip.cal&&chip.cal.couplers;
+  chip.adj=P.map(()=>[]);
+  // substrate grid + patch outlines
+  let out=`<defs><pattern id="grid" width="${s}" height="${s}" patternUnits="userSpaceOnUse" x="${ox}" y="${oy}"><path d="M ${s} 0 L 0 0 0 ${s}" fill="none" stroke="var(--chip-grid)" stroke-width="1"/></pattern>
+    <radialGradient id="glow"><stop offset="0" stop-color="#fff" stop-opacity=".55"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs>
+    <rect x="0" y="0" width="${W}" height="${H}" fill="url(#grid)"/>`;
+  const patches={};P.forEach((q,i)=>{(patches[q.patch]=patches[q.patch]||[]).push(i)});
+  const pnames=(chip.status&&chip.status.device&&chip.status.device.patches)||{};
+  for(const [pid,idx] of Object.entries(patches)){const px=idx.map(i=>chip.pos[i][0]),py=idx.map(i=>chip.pos[i][1]);
+    const m=r+12,bx=Math.min(...px)-m,by=Math.min(...py)-m,bw=Math.max(...px)-Math.min(...px)+2*m,bh=Math.max(...py)-Math.min(...py)+2*m;
+    out+=`<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="12" fill="rgba(120,160,220,.035)" stroke="var(--chip-edge)" stroke-dasharray="4 4"/>
+      <text x="${bx+8}" y="${by-6}" fill="var(--chip-muted)" font-size="11" font-weight="600" font-family="system-ui,sans-serif">patch ${esc(pid)}${pnames[pid]!=null?' · '+esc(pnames[pid]):''}</text>`}
+  // couplers (colour = CZ error estimate, if calibrated)
+  out+=dev.couplers.map((c,k)=>{chip.adj[c.q0].push(k);chip.adj[c.q1].push(k);
+    const a=chip.pos[c.q0],b=chip.pos[c.q1];const e=calC&&calC[k]?calC[k].cz_error:null;const u=cz?cz(e):null;
+    const col=u==null?'var(--chip-edge)':ramp(u);
+    return `<line class="cp" data-k="${k}" x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${col}" stroke-width="${Math.max(1.2,r*0.32)}" opacity="${u==null?.8:.85}"/>`}).join('');
+  // qubits
+  const showLabels=n<=60&&r>=8;
+  out+=P.map((q,i)=>{const st=qs[i]||{};const [cx,cy]=chip.pos[i];const fill=nodeFill(st);
+    const e=st.readout_err_est;const ring=st.calibrated?'#4cc47a':'#ef6b62';
+    const short=q.name.includes('.')?q.name.split('.').pop():q.name;
+    return `<g class="q" data-i="${i}" tabindex="0" aria-label="${esc(q.name)}">
+      <circle class="halo" cx="${cx}" cy="${cy}" r="${r*2.3}" fill="url(#glow)"/>
+      <circle cx="${cx}" cy="${cy}" r="${r+3.2}" fill="none" stroke="${ring}" stroke-width="${e==null?1:Math.min(4,1+e*250)}" opacity=".9"/>
+      <circle class="core" cx="${cx}" cy="${cy}" r="${r}" fill="${fill}" stroke="rgba(255,255,255,.35)" stroke-width="1"/>
+      ${showLabels?`<text x="${cx}" y="${cy+r+14}">${esc(short)}</text>`:''}</g>`}).join('');
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.style.height=H+'px';svg.innerHTML=out;
+  svg.querySelectorAll('.q').forEach(g=>{const i=+g.dataset.i;
+    g.addEventListener('mouseenter',()=>{chip.hover=i;applyFocus()});
+    g.addEventListener('mouseleave',()=>{chip.hover=null;applyFocus()});
+    g.addEventListener('click',()=>{chip.sel=chip.sel===i?null:i;applyFocus()});
+    g.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();chip.sel=chip.sel===i?null:i;applyFocus()}})});
+  drawLegend();applyFocus();
+}
+function applyFocus(){const svg=$('map');const f=chip.hover!=null?chip.hover:chip.sel;
+  svg.classList.toggle('focus',f!=null);
+  svg.querySelectorAll('.q').forEach(g=>{const i=+g.dataset.i;g.classList.toggle('sel',i===chip.sel);g.classList.toggle('hl',i===f)});
+  const ks=new Set(f!=null&&chip.adj[f]?chip.adj[f]:[]);const nb=new Set();
+  if(f!=null)for(const k of ks){const c=chip.dev.couplers[k];nb.add(c.q0);nb.add(c.q1)}
+  svg.querySelectorAll('.cp').forEach(l=>l.classList.toggle('hl',ks.has(+l.dataset.k)));
+  svg.querySelectorAll('.q').forEach(g=>{if(nb.has(+g.dataset.i))g.classList.add('hl')});
+  drawInfo(f)}
+function bar(u){return u==null?'':`<div class="bar"><i style="width:${Math.round(100*(1-u))}%;background:${ramp(u)}"></i></div>`}
+function drawInfo(i){const el=$('qinfo');
+  if(i==null||!chip.qs||!chip.qs[i]){const c=chip.status&&chip.status.calibration;
+    el.innerHTML=`<h3>Device overview</h3><div class="role">Hover or click a qubit for details</div>`+
+      (c?`<div class="kv"><span class="muted">readout calibrated</span><b>${c.readout_calibrated}/${c.qubits}</b><span class="muted">median T1</span><b>${fmt(c.median_t1_us,1)} µs</b><span class="muted">median readout err</span><b>${pct(c.median_readout_error)}</b><span class="muted">median CZ err</span><b>${pct(c.median_cz_error)}</b></div>`:'');return}
+  const q=chip.qs[i],d=chip.dev.qubits[i],calC=chip.cal&&chip.cal.couplers,ks=chip.adj[i]||[];
+  const cze=ks.map(k=>calC&&calC[k]?calC[k].cz_error:null).filter(x=>x!=null);
+  const t1s=metricScale(METRICS.t1),ros=metricScale(METRICS.ro);
+  el.innerHTML=`<h3>${esc(q.name)}</h3><div class="role"><i style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${(ROLE[q.role]||ROLE.spare)[0]};margin-right:6px"></i>${esc((ROLE[q.role]||[0,q.role])[1])} · patch ${esc(d.patch)} · feedline ${esc(d.feedline)}</div>
+    <div class="kv"><span class="muted">T1 est</span><b>${fmt(q.t1_us_est,1)} µs</b></div>${t1s?bar(t1s(q.t1_us_est)):''}
+    <div class="kv"><span class="muted">readout err</span><b>${q.readout_err_est==null?'—':pct(q.readout_err_est,3)}</b></div>${ros?bar(ros(q.readout_err_est)):''}
+    <div class="kv"><span class="muted">T1 truth</span><b>${fmt(q.t1_us_true,1)} µs</b>
+    <span class="muted">detuning truth</span><b>${fmt(q.detuning_khz_true,1)} kHz</b>
+    <span class="muted">couplers</span><b>${ks.length}${cze.length?` · mean CZ err ${pct(cze.reduce((a,b)=>a+b,0)/cze.length,3)}`:''}</b>
+    <span class="muted">status</span><b style="color:${q.calibrated?'var(--ok)':'var(--bad)'}">${q.calibrated?'calibrated':'not calibrated'}</b></div>
+    <div class="role" style="margin:10px 0 0">“truth” values are the hidden device parameters (twin only).</div>`}
+function drawLegend(){const m=METRICS[chip.metric];let h='';
+  if(chip.metric==='role')h=Object.entries(ROLE).filter(([k])=>chip.qs.some(q=>q.role===k)).map(([k,[c,l]])=>`<span><i style="background:${c}"></i>${l}</span>`).join('');
+  else{const v=chip.qs.map(q=>m.get(q)).filter(x=>x!=null&&isFinite(x));
+    h=v.length?`<span class="ramp">${m.label}: <b>${fmt(m.better==='high'?Math.max(...v):Math.min(...v),m.d)}</b><span class="g" style="background:linear-gradient(90deg,${ramp(0)},${ramp(.5)},${ramp(1)})"></span><b>${fmt(m.better==='high'?Math.min(...v):Math.max(...v),m.d)}</b> ${m.unit}</span>`:`<span>${m.label}: not measured yet — run a calibration</span>`}
+  h+=`<span class="ramp">coupler CZ error<span class="g" style="width:60px;background:linear-gradient(90deg,${ramp(0)},${ramp(1)})"></span></span>`;
+  h+=`<span><i style="background:transparent;border:2px solid #4cc47a"></i>ring: calibrated (thicker = worse readout)</span><span><i style="background:transparent;border:2px solid #ef6b62"></i>not calibrated</span>`;
+  $('legend').innerHTML=h}
+$('metric').addEventListener('click',ev=>{const b=ev.target.closest('button');if(!b)return;chip.metric=b.dataset.m;
+  $('metric').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x===b));drawChip()});
+document.addEventListener('keydown',ev=>{if(ev.key==='Escape'&&chip.sel!=null){chip.sel=null;applyFocus()}});
+
+// ------------------------------------------------------------------ status
+function hstat(id,cls,text){$(id).innerHTML=`<span class="dot ${cls}"></span>${esc(text)}`}
+function kpis(s){const c=s.calibration||{},runs=s.runs||[],last=runs.length?runs[runs.length-1]:null;
+  const tiles=[['Qubits',s.device?s.device.qubits:'—',s.device?`${s.device.couplers} couplers`:''],
+    ['Median T1',c.median_t1_us==null?'—':fmt(c.median_t1_us,1),'µs'],
+    ['Readout error',c.median_readout_error==null?'—':pct(c.median_readout_error),'median'],
+    ['CZ error',c.median_cz_error==null?'—':pct(c.median_cz_error),'median'],
+    ['Last LER',last&&last.ler.length?pct(Math.max(...last.ler)):'—',last?`${esc(last.decoder)} · ${last.shots} shots`:'no runs yet'],
+    ['Cosmic-ray events',s.cosmic_events==null?'—':s.cosmic_events,'since start']];
+  $('kpis').innerHTML=tiles.map(([k,v,e])=>`<div class="kpi"><small>${k}</small><b>${v}</b><em>${e}</em></div>`).join('')}
 async function refresh(){
-  try{const s=await api('/api/status');
-    $('clock').textContent=`virtual time ${fmt(s.virtual_time_us,1)} µs`+(s.busy?` · busy: ${s.busy}`:'')+(s.stale?' · (showing last snapshot)':'');
-    if(s.device){kv($('device'),[['name',esc(s.device.name)],['qubits',s.device.qubits],['couplers',s.device.couplers],['profile',esc(s.device.profile)],['patches',Object.entries(s.device.patches).map(([k,v])=>`${k}: ${esc(v)}`).join('<br>')],['cosmic-ray events',s.cosmic_events]])}
-    if(s.calibration){const c=s.calibration;kv($('cal'),[['store version',c.version],['readout calibrated',`${c.readout_calibrated}/${c.qubits}`],['median T1',fmt(c.median_t1_us,1)+' µs'],['median readout error',fmt(c.median_readout_error,4)],['median CZ error',fmt(c.median_cz_error,4)]])}
-    if(s.link){const l=s.link;kv($('link'),[['control',`<span class="pill ${l.control}">${l.control}</span>`],['gateway',`<span class="pill ${l.gateway}">${l.gateway}</span>`],['config epoch','0x'+(l.epoch>>>0).toString(16).padStart(8,'0')],['clock offset',fmt(l.time_offset_ps==null?null:l.time_offset_ps/1000,2)+' ns'],['path delay',fmt(l.path_delay_ps==null?null:l.path_delay_ps/1000,1)+' ns'],['credits',l.credits]])}
-    if(s.qubits)drawMap(s.qubits);
-    if(s.runs)$('runs').innerHTML=s.runs.slice().reverse().map(r=>`<tr><td><a href="/api/runs/${esc(r.run_id)}" target="_blank">${esc(r.run_id)}</a></td><td>${esc(r.experiment)}</td><td>${esc(r.mode)}</td><td>${esc(r.decoder)}</td><td>${r.shots}</td><td>${r.ler.map(x=>fmt(x,4)).join(', ')}</td></tr>`).join('');
+  try{const s=await api('/api/status');chip.status=s;
+    hstat('clock',s.busy?'warn':'ok',`virtual time ${fmt(s.virtual_time_us,1)} µs`+(s.busy?` · busy: ${s.busy}`:'')+(s.stale?' · last snapshot':''));
+    if(s.device){kv($('device'),[['name',esc(s.device.name)],['qubits',s.device.qubits],['couplers',s.device.couplers],['profile',esc(s.device.profile)],['patches',Object.entries(s.device.patches).map(([k,v])=>`${esc(k)}: ${esc(v)}`).join('<br>')],['cosmic-ray events',s.cosmic_events]])}
+    if(s.calibration){const c=s.calibration;kv($('cal'),[['store version',c.version],['readout calibrated',`${c.readout_calibrated}/${c.qubits}`],['median T1',fmt(c.median_t1_us,1)+' µs'],['median readout error',fmt(c.median_readout_error,4)],['median CZ error',fmt(c.median_cz_error,4)]]);
+      hstat('hcal',c.readout_calibrated===c.qubits?'ok':'warn',`calibration v${c.version} · ${c.readout_calibrated}/${c.qubits}`)}
+    if(s.link){const l=s.link;kv($('link'),[['control',`<span class="pill ${esc(l.control)}">${esc(l.control)}</span>`],['gateway',`<span class="pill ${esc(l.gateway)}">${esc(l.gateway)}</span>`],['config epoch','0x'+(l.epoch>>>0).toString(16).padStart(8,'0')],['clock offset',fmt(l.time_offset_ps==null?null:l.time_offset_ps/1000,2)+' ns'],['path delay',fmt(l.path_delay_ps==null?null:l.path_delay_ps/1000,1)+' ns'],['credits',l.credits]]);
+      const up=l.control==='UP'&&l.gateway==='UP',down=l.control==='DOWN'||l.gateway==='DOWN'||l.control==='FAILED'||l.gateway==='FAILED';
+      hstat('hlink',up?'ok':down?'bad':'warn',`link ${l.gateway}`)}
+    kpis(s);
+    if(s.qubits){
+      if(!chip.dev||chip.dev.qubits.length!==s.qubits.length){try{chip.dev=await api('/api/device')}catch(e){}}
+      const ver=s.calibration?s.calibration.version:null;
+      if(ver!==chip.calVer){try{chip.cal=await api('/api/calibration');chip.calVer=ver}catch(e){}}
+      chip.qs=s.qubits;drawChip();if(chip.hover==null)drawInfo(chip.sel)}
+    if(s.runs)$('runs').innerHTML=s.runs.slice().reverse().map(r=>`<tr><td><a href="${esc(withTok('/api/runs/'+encodeURIComponent(r.run_id)))}" target="_blank" rel="noopener">${esc(r.run_id)}</a></td><td>${esc(r.experiment)}</td><td>${esc(r.mode)}</td><td>${esc(r.decoder)}</td><td>${r.shots}</td><td>${r.ler.map(x=>fmt(x,4)).join(', ')}</td></tr>`).join('');
     if(s.events)$('log').textContent=s.events.slice().reverse().map(e=>`[${e.t_us.toFixed(1)} µs] ${e.msg}`).join('\n');
-  }catch(e){$('clock').textContent='disconnected: '+e.message}
+  }catch(e){hstat('clock','bad','disconnected: '+e.message)}
   try{const js=await api('/api/jobs');$('jobs').innerHTML=js.map(j=>`<tr><td>${esc(j.id)}</td><td>${esc(j.kind)}</td><td><span class="pill ${esc(j.state)}">${esc(j.state)}</span></td><td>${esc(JSON.stringify(j.params))}</td><td><pre style="margin:0;white-space:pre-wrap">${esc(j.error||(j.result&&(j.result.summary||j.result.actions))||'')}</pre></td></tr>`).join('')}catch(e){}
 }
-async function calib(mode){try{await api('/api/calibrate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});refresh()}catch(e){$('formerr').textContent=e.message}}
+async function calib(mode){$('formerr').textContent='';try{await post('/api/calibrate',{mode});refresh()}catch(e){$('formerr').textContent=e.message}}
 async function submitRun(ev){ev.preventDefault();$('formerr').textContent='';const f=new FormData($('runform'));const b=Object.fromEntries(f.entries());b.branching=b.branching==='true';
-  try{await api('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});refresh()}catch(e){$('formerr').textContent=e.message}}
-async function setBer(){try{await api('/api/impairments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ber:parseFloat($('ber').value)||0,direction:'down'})})}catch(e){$('formerr').textContent=e.message}}
-refresh();setInterval(refresh,1500);addEventListener('resize',refresh);
+  try{await post('/api/run',b);refresh()}catch(e){$('formerr').textContent=e.message}}
+async function setBer(){$('formerr').textContent='';try{await post('/api/impairments',{ber:parseFloat($('ber').value)||0,direction:'down'})}catch(e){$('formerr').textContent=e.message}}
+let rz;addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(()=>{chip.sig='';drawChip()},120)});
+refresh();setInterval(refresh,1500);
 </script>
 </body>
 </html>

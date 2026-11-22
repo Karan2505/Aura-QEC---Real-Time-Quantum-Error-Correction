@@ -39,7 +39,7 @@ class TimeSyncConfig:
     lock_threshold_ps: int = 2 * NS         # |offset| below this ...
     lock_samples: int = 4                   # ... for this many consecutive samples => locked
     unlock_threshold_ps: int = 20 * NS
-    asymmetry_ps: int = 0                   # known (calibrated) path asymmetry, slave->master minus master->slave
+    asymmetry_ps: int = 0                   # known (calibrated) path asymmetry, master->slave minus slave->master (offset = (ms - sm - asym)/2)
     max_ppm: float = 500.0
 
 
@@ -179,8 +179,8 @@ class TimeSyncSlave:
         # lock detection with hysteresis
         if abs(offset) <= self.cfg.lock_threshold_ps and kind == "freq":
             self._good += 1
-        elif abs(offset) > self.cfg.unlock_threshold_ps:
-            self._good = 0
+        else:
+            self._good = 0          # lock needs consecutive good samples
         was = self.locked
         if not self.locked and self._good >= self.cfg.lock_samples:
             self.locked = True
