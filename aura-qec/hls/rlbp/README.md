@@ -67,7 +67,8 @@ Options (environment variables):
 * `RLBP_PART` defaults to the Kria K26 (`xck26-sfvc784-2LV-c`).
 * `RLBP_CLK` defaults to 3.333 ns, the 300 MHz AURA core clock.
 * `RLBP_STEPS` defaults to `"csim csynth cosim"`. Add `export` to package the IP, or `impl`
-  for Vivado synthesis and place & route of the kernel alone (real LUT/FF and timing).
+  for Vivado synthesis and place & route of the kernel alone (real LUT/FF and timing;
+  about 15 min, fits in 7 GB RAM with the default `RLBP_IMPL_REPORTS=0`).
 * `RLBP_AXI=1` puts every port and the block control on one AXI4-Lite slave, for a Zynq
   block design.
 
@@ -115,8 +116,8 @@ Results on surface-3 r=3 (16 checks, 55 vars, 94 edges), KV260, 300 MHz, Vitis 2
 | co-sim min / avg / max, 1000 shots | 119 / 2160 / 43,870 cycles (BP only) | **5 / 20 / 379 cycles** (incl. OSD) |
 | time at 300 MHz (avg / max) | 7.2 us / 146 us | **0.07 us / 1.26 us** |
 | worst case (30 iters + full OSD) | 118,362 cycles | 1526 cycles (~5.1 us) |
-| clock | 3.64 ns HLS estimate (missed) | 2.80 ns after Vivado synthesis (met) |
-| LUT / FF / DSP / BRAM | 4.3k / 2.9k / 5 / 6 (HLS estimate) | **11.3k (9.6%) / 8.6k (3.7%) / 2 / 1** (Vivado synthesis) |
+| clock (3.333 ns target) | 3.64 ns HLS estimate (missed) | **3.21 ns post-route (met, Fmax ~311 MHz)** |
+| LUT / FF / DSP / BRAM | 4.3k / 2.9k / 5 / 6 (HLS estimate) | **11.2k (9.6%) / 8.6k (3.7%) / 2 / 1** (post-route, 2227 CLBs) |
 | LER (golden 2.20%) | 2.20% (bit-exact) | 2.30% |
 
 Notes:
@@ -125,15 +126,17 @@ Notes:
   the `impl` numbers.
 * LLR widths from 16 down to 8 bits gave the same LER (2.3–2.4%) on these vectors.
 * OSD-0 accounts for about 1100 of the worst-case cycles, but runs on only about 4% of shots.
-* Vivado place & route ran out of memory (`bad allocation`) on this 7 GB-RAM PC during report
-  generation, after placement. The resource and timing figures above are post-synthesis.
+* Timing after place & route: 3.21 ns, against 2.80 ns post-synthesis, leaving 0.12 ns of slack.
+  The routing margin is thin.
+* `impl` runs with `vivado_report_level 0` by default. Level 2's parallel report generation
+  ran out of memory (`bad allocation`) on a 7 GB-RAM PC. Set `RLBP_IMPL_REPORTS=2` on a bigger
+  machine to get the full report set.
 
 ## Next steps
 
-1. Re-run `impl` on a machine with more RAM to get post-route timing.
-2. Surface-5 is about 5x larger. If it does not fit fully parallel, use partial unrolling
+1. Surface-5 is about 5x larger. If it does not fit fully parallel, use partial unrolling
    (process checks in groups).
-3. Speed up the OSD walk (about 18 cycles per column now). Options: pipeline the GF(2)
+2. Speed up the OSD walk (about 18 cycles per column now). Options: pipeline the GF(2)
    reduction, or stop the walk after NUM_CHECKS independent pivots.
-4. AXI-Stream syndrome input straight from AURA-Link. `RLBP_AXI` covers AXI4-Lite control but
+3. AXI-Stream syndrome input straight from AURA-Link. `RLBP_AXI` covers AXI4-Lite control but
    has not been synthesised yet.

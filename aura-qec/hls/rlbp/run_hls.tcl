@@ -48,5 +48,10 @@ if {[lsearch $STEPS cosim]  >= 0} { cosim_design -argv "vectors.txt" -trace_leve
 if {[lsearch $STEPS export] >= 0} { export_design -format ip_catalog -rtl verilog }
 # Vivado synthesis + place & route of the kernel alone: real LUT/FF and timing
 # (report: sol_*/impl/report/verilog/export_impl.rpt)
-if {[lsearch $STEPS impl]   >= 0} { export_design -flow impl -rtl verilog -format ip_catalog }
+#   RLBP_IMPL_REPORTS = 0|1|2  Vivado report level (default 0: minimal; level 2's parallel
+#                              report generation ran out of memory on a 7 GB machine)
+if {[lsearch $STEPS impl]   >= 0} {
+    config_export -vivado_report_level [env_or RLBP_IMPL_REPORTS 0]
+    export_design -flow impl -rtl verilog -format ip_catalog
+}
 exit
