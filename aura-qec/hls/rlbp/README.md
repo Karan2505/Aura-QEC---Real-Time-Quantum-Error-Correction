@@ -60,7 +60,8 @@ the C-sim / co-sim argument to `vectors.txt`. Then run C Simulation, C Synthesis
 Co-Simulation.
 
 Options (environment variables): `RLBP_MODE=fixed` switches LLRs to
-`ap_fixed<16,8>`. The pass criterion then becomes "LER within 0.5 % of golden",
+`ap_fixed<10,6>` (override with `RLBP_LLR="16 8"`). Use fixed for synthesis;
+float is the bit-exact reference for csim. The pass criterion then becomes "LER within 0.5 % of golden",
 since bit-exactness no longer applies. `RLBP_PART` defaults to the Kria K26
 (`xck26-sfvc784-2LV-c`). `RLBP_CLK` defaults to 3.333 ns, the 300 MHz AURA core
 clock. `RLBP_STEPS` defaults to `"csim csynth cosim"`; add `export` to package the IP.
@@ -92,12 +93,33 @@ the testbench does, in C++, as a port of `osd.py`.
 * **Done:** float kernel bit-exact against Python on surface-3 (device shots,
   1000 vectors) and surface-5 (DEM shots, 3000 vectors). The comparison
   covers exit reason, iterations, BP logical and post-OSD logical.
-* **This is a correctness baseline, not an optimised architecture.** It is a
-  serial edge-by-edge schedule: the edge loops are pipelined, and the float
-  adder's latency bounds the II of `VAR_SUM`. Next steps:
-  1. `RLBP_MODE=fixed`: much smaller and faster; compare the LER.
-  2. `ARRAY_PARTITION` of `m_vc`/`m_cv`, and `UNROLL` of the check and variable loops, to get
-     a fully parallel node array (feasible for surface-3/5 sizes). The goal is about one iteration per few cycles.
+* **Fully parallel node array.** The message arrays are completely
+  partitioned and every check, variable and syndrome loop is unrolled over the
+  compile-time graph, so a BP iteration is a short pipeline instead of an
+  edge-by-edge walk. The float build stays bit-exact; **synthesise with
+  `RLBP_MODE=fixed`** (default `ap_fixed<10,6,AP_TRN,AP_SAT>`, set by `RLBP_LLR="W I"`).
+
+  Results on surface-3 r=3 (16 checks, 55 vars, 94 edges), KV260, 300 MHz, Vitis HLS 2025.1:
+
+  | | serial float (previous) | parallel fixed 10-bit |
+  |---|---|---|
+  | cycles / BP iteration | 3938 | **13** |
+  | worst case (30 iters) | 118,362 cycles (~395 us) | **476 cycles (~1.6 us)** |
+  | co-sim avg / max over 1000 shots | 2160 / 43,870 cycles | **86 / 249 cycles** (0.29 / 0.83 us) |
+  | estimated clock | 3.64 ns (timing missed) | 2.42 ns (met) |
+  | LUT / FF | 4.3k / 2.9k | 33.6k (28%) / 7.9k (3%) |
+  | LER (golden 2.20%) | 2.20% (bit-exact) | 2.30% |
+
+  LLR widths from 16 down to 8 bits gave the same LER (2.3–2.4%) on these
+  vectors. Of the ~86 average cycles, ~75 are the serial `syndrome` load and
+  `posterior` write over `ap_memory`.
+
+  Next steps:
+  1. Check the real LUT count after Vivado implementation (HLS estimates are pessimistic).
+     Surface-5 is ~5x larger; if it does not fit fully parallel, use partial unrolling
+     (process checks in groups) instead.
+  2. Wider I/O: an `ap_uint<NUM_CHECKS>` syndrome word and packed outputs remove the
+     ~75 cycles of array transfer.
   3. Move OSD-0 into hardware (bitset Gaussian elimination with `ap_uint<NUM_CHECKS>`)
      or run it on the Zynq PS.
   4. AXI interfaces (`s_axilite` control, `axis` syndrome stream from AURA-Link) for

@@ -20,12 +20,25 @@
 // -DRLBP_FIXED    -> ap_fixed (much cheaper on the FPGA; compare LER, not bits).
 #ifdef RLBP_FIXED
 #include <ap_fixed.h>
-typedef ap_fixed<16, 8, AP_RND, AP_SAT> llr_t;   // range +-128, step 1/256
-#define RLBP_LLR_INF llr_t(127.99)
+// Width/integer bits are overridable (-DRLBP_LLR_W=.. -DRLBP_LLR_I=..). Saturation
+// is required (sums of LLRs must not wrap); truncation instead of rounding saves
+// an adder per operation.
+// Default 10 bits: range +-32, step 1/16. On surface:3 every width from 16 down
+// to 8 bits gave the same LER (within 0.2%) on the golden vectors.
+#ifndef RLBP_LLR_W
+#define RLBP_LLR_W 10
+#endif
+#ifndef RLBP_LLR_I
+#define RLBP_LLR_I 6
+#endif
+#ifndef RLBP_LLR_Q
+#define RLBP_LLR_Q AP_TRN
+#endif
+typedef ap_fixed<RLBP_LLR_W, RLBP_LLR_I, RLBP_LLR_Q, AP_SAT> llr_t;
+#define RLBP_LLR_INF llr_t(4096.0)                // saturates to the largest value
 #else
-#include <limits>
 typedef float llr_t;
-#define RLBP_LLR_INF std::numeric_limits<float>::infinity()
+#define RLBP_LLR_INF __builtin_huge_valf()
 #endif
 
 // exit reasons (same codes as aura.decoding.bp)

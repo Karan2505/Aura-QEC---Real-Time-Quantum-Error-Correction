@@ -9,6 +9,10 @@
 #   RLBP_PART  = FPGA part           (default: Kria KV260 / K26 SOM, free license)
 #   RLBP_CLK   = clock period, ns    (default 3.333 = 300 MHz, the AURA core clock)
 #   RLBP_STEPS = "csim csynth cosim export"   (subset to run)
+#   RLBP_LLR   = "W I"  fixed-point LLR width / integer bits (default "10 6")
+#
+# Each mode gets its own solution (sol_float, sol_fixed); the project is not
+# reset, so running one mode keeps the other's reports.
 
 proc env_or {name default} {
     if {[info exists ::env($name)] && $::env($name) ne ""} { return $::env($name) }
@@ -20,9 +24,13 @@ set CLK   [env_or RLBP_CLK   3.333]
 set STEPS [env_or RLBP_STEPS "csim csynth cosim"]
 
 set CFLAGS "-std=c++14"
-if {$MODE eq "fixed"} { append CFLAGS " -DRLBP_FIXED" }
+if {$MODE eq "fixed"} {
+    append CFLAGS " -DRLBP_FIXED"
+    set LLR [env_or RLBP_LLR ""]
+    if {[llength $LLR] == 2} { append CFLAGS " -DRLBP_LLR_W=[lindex $LLR 0] -DRLBP_LLR_I=[lindex $LLR 1]" }
+}
 
-open_project -reset rlbp_prj
+open_project rlbp_prj
 set_top rlbp_decode
 add_files rlbp_decoder.cpp -cflags $CFLAGS
 add_files -tb tb_rlbp.cpp  -cflags "$CFLAGS -Wno-unknown-pragmas"

@@ -1,8 +1,19 @@
-// RL-BP decoder kernel (synthesisable). See rlbp_decoder.h.
+﻿// RL-BP decoder kernel (synthesisable). See rlbp_decoder.h.
 //
-// Data layout: edges are sorted by check (CHK_PTR / E_VAR); VAR_PTR / VAR_EDGE
-// list each variable's edges in ascending order, which is the summation order
-// of the Python model (keeps float results bit-identical).
+// Architecture: the Tanner graph is a compile-time constant (rlbp_graph.h), so
+// every per-check / per-variable loop is fully unrolled over the graph and the
+// message arrays are completely partitioned into registers. All CSR lookups
+// (CHK_PTR, E_VAR, VAR_EDGE, ...) then fold to constants and one BP iteration
+// becomes a short fixed pipeline of compare / add stages instead of a
+// sequential walk over the edges.
+//
+// Arithmetic order is unchanged from the sequential reference: edges of a
+// check are scanned in order (same min1/min2/argmin tie-breaking) and each
+// variable sums its edges in ascending order (the Python model's summation
+// order), so the float build stays bit-identical to aura.decoding.
+//
+// Synthesise with RLBP_MODE=fixed: in float mode the unrolled datapath needs
+// one floating-point adder / comparator per edge.
 #include "rlbp_decoder.h"
 
 // ---- RL policy state: aura.decoding.policy.encode_state --------------------
@@ -21,7 +32,7 @@ unsigned short rlbp_state(int t, int unsat, int unsat0, int stall) {
     return (unsigned short)(((tb * 6 + wb) * 4 + rb) * 5 + sb);
 }
 
-// prior LLRs as a ROM of llr_t (no float->fixed conversion in hardware)
+// prior LLRs as constants of type llr_t (no float->fixed conversion in hardware)
 static const llr_t PRIOR[RLBP_NUM_VARS] = RLBP_PRIOR_INIT;
 
 static llr_t llr_abs(llr_t x) {
@@ -35,6 +46,8 @@ static unsigned char bp_iterate(const bool s[RLBP_NUM_CHECKS], int w0,
                                 llr_t tot[RLBP_NUM_VARS], bool hd[RLBP_NUM_VARS], int *t_exit) {
     llr_t m_vc[RLBP_NUM_EDGES];      // variable -> check messages
     llr_t m_cv[RLBP_NUM_EDGES];      // check -> variable messages
+#pragma HLS ARRAY_PARTITION variable = m_vc complete
+#pragma HLS ARRAY_PARTITION variable = m_cv complete
     const llr_t alpha = RLBP_ALPHA;
     int best = w0, stall = 0;
     unsigned char reason = EXIT_MAX_ITER;
@@ -42,74 +55,80 @@ static unsigned char bp_iterate(const bool s[RLBP_NUM_CHECKS], int w0,
 
 INIT_E:
     for (int e = 0; e < RLBP_NUM_EDGES; e++) {
-#pragma HLS PIPELINE II = 1
+#pragma HLS UNROLL
         m_vc[e] = PRIOR[E_VAR[e]];
     }
 
 ITER:
     for (int t = 1; t <= RLBP_MAX_ITER; t++) {
 #pragma HLS LOOP_TRIPCOUNT min = 1 max = RLBP_MAX_ITER avg = 3
-        // ---- check-node update: normalised min-sum, min1/min2 ---------------
+        // ---- check-node update: normalised min-sum, min1/min2 (all checks in parallel)
     CHECK:
         for (int c = 0; c < RLBP_NUM_CHECKS; c++) {
+#pragma HLS UNROLL
             const int e0 = CHK_PTR[c], e1 = CHK_PTR[c + 1];
             llr_t min1 = RLBP_LLR_INF, min2 = RLBP_LLR_INF;
-            int arg = -1;
+            unsigned char arg = 255;      // position (0..deg-1) of the smallest |message|
             bool par = s[c];
         CHECK_MIN:
-            for (int e = e0; e < e1; e++) {
-#pragma HLS LOOP_TRIPCOUNT min = 1 max = RLBP_MAX_CHK_DEG
-#pragma HLS PIPELINE II = 1
-                llr_t x = m_vc[e];
-                llr_t mag = llr_abs(x);
-                par ^= (x < 0);
-                if (mag < min1) { min2 = min1; min1 = mag; arg = e; }
-                else if (mag < min2) { min2 = mag; }
+            for (int d = 0; d < RLBP_MAX_CHK_DEG; d++) {
+#pragma HLS UNROLL
+                const int e = e0 + d;
+                if (e < e1) {
+                    llr_t x = m_vc[e];
+                    llr_t mag = llr_abs(x);
+                    par ^= (x < 0);
+                    if (mag < min1) { min2 = min1; min1 = mag; arg = d; }
+                    else if (mag < min2) { min2 = mag; }
+                }
             }
         CHECK_OUT:
-            for (int e = e0; e < e1; e++) {
-#pragma HLS LOOP_TRIPCOUNT min = 1 max = RLBP_MAX_CHK_DEG
-#pragma HLS PIPELINE II = 1
-                llr_t ext = (e == arg) ? min2 : min1;
-                llr_t msg = ext * alpha;
-                bool flip = par ^ (m_vc[e] < 0);
-                m_cv[e] = flip ? llr_t(-msg) : msg;
+            for (int d = 0; d < RLBP_MAX_CHK_DEG; d++) {
+#pragma HLS UNROLL
+                const int e = e0 + d;
+                if (e < e1) {
+                    llr_t ext = (d == arg) ? min2 : min1;
+                    llr_t msg = ext * alpha;
+                    bool flip = par ^ (m_vc[e] < 0);
+                    m_cv[e] = flip ? llr_t(-msg) : msg;
+                }
             }
         }
-        // ---- variable-node update + hard decision ---------------------------
+        // ---- variable-node update + hard decision (all variables in parallel)
     VAR:
         for (int v = 0; v < RLBP_NUM_VARS; v++) {
+#pragma HLS UNROLL
             const int p0 = VAR_PTR[v], p1 = VAR_PTR[v + 1];
             llr_t acc = 0;
         VAR_SUM:
-            for (int k = p0; k < p1; k++) {
-#pragma HLS LOOP_TRIPCOUNT min = 1 max = RLBP_MAX_VAR_DEG
-#pragma HLS PIPELINE II = 1
-                acc += m_cv[VAR_EDGE[k]];
+            for (int d = 0; d < RLBP_MAX_VAR_DEG; d++) {
+#pragma HLS UNROLL
+                if (p0 + d < p1) acc += m_cv[VAR_EDGE[p0 + d]];
             }
             llr_t tv = acc + PRIOR[v];
             tot[v] = tv;
             hd[v] = tv < 0;
         VAR_OUT:
-            for (int k = p0; k < p1; k++) {
-#pragma HLS LOOP_TRIPCOUNT min = 1 max = RLBP_MAX_VAR_DEG
-#pragma HLS PIPELINE II = 1
-                int e = VAR_EDGE[k];
-                m_vc[e] = tv - m_cv[e];
+            for (int d = 0; d < RLBP_MAX_VAR_DEG; d++) {
+#pragma HLS UNROLL
+                if (p0 + d < p1) {
+                    const int e = VAR_EDGE[p0 + d];
+                    m_vc[e] = tv - m_cv[e];
+                }
             }
         }
-        // ---- syndrome check --------------------------------------------------
+        // ---- syndrome check: parity of each check, then popcount ------------
         int unsat = 0;
     SYN:
         for (int c = 0; c < RLBP_NUM_CHECKS; c++) {
-            bool p = false;
+#pragma HLS UNROLL
+            bool p = s[c];
         SYN_E:
-            for (int e = CHK_PTR[c]; e < CHK_PTR[c + 1]; e++) {
-#pragma HLS LOOP_TRIPCOUNT min = 1 max = RLBP_MAX_CHK_DEG
-#pragma HLS PIPELINE II = 1
-                p ^= hd[E_VAR[e]];
+            for (int d = 0; d < RLBP_MAX_CHK_DEG; d++) {
+#pragma HLS UNROLL
+                if (CHK_PTR[c] + d < CHK_PTR[c + 1]) p ^= hd[E_VAR[CHK_PTR[c] + d]];
             }
-            unsat += (p != s[c]);
+            unsat += p;
         }
         if (unsat < best) { best = unsat; stall = 0; } else { stall++; }
 
@@ -141,6 +160,9 @@ void rlbp_decode(const unsigned char syndrome[RLBP_NUM_CHECKS],
     llr_t tot[RLBP_NUM_VARS];        // posterior LLRs (written to the port once, at exit)
     bool hd[RLBP_NUM_VARS];          // hard decision
     bool s[RLBP_NUM_CHECKS];
+#pragma HLS ARRAY_PARTITION variable = tot complete
+#pragma HLS ARRAY_PARTITION variable = hd complete
+#pragma HLS ARRAY_PARTITION variable = s complete
 
     // ---- syndrome weight; bits on checks no mechanism touches are unexplainable
     int w0 = 0;
@@ -154,7 +176,7 @@ LOAD_S:
     }
 INIT_V:
     for (int v = 0; v < RLBP_NUM_VARS; v++) {
-#pragma HLS PIPELINE II = 1
+#pragma HLS UNROLL
         tot[v] = PRIOR[v];
         hd[v] = false;
     }
