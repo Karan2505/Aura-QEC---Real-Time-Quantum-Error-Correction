@@ -7,13 +7,19 @@
 //   * a reinforcement-learned halting policy (HALT_TABLE lookup) that hands
 //     hopeless shots to the OSD fallback early.
 //
-// Port of aura.decoding.bp.MinSumBP + aura.decoding.policy.QHaltingPolicy.
-// One shot per call. The OSD-0 fallback stays outside the kernel (testbench /
-// host CPU for now): the kernel returns the posterior LLRs it needs.
+//   * OSD-0 fallback in hardware for halted / budget-exhausted shots.
+//
+// Port of aura.decoding.bp.MinSumBP + aura.decoding.policy.QHaltingPolicy +
+// aura.decoding.osd.osd0. One shot per call; the kernel returns the final
+// logical prediction.
 #ifndef RLBP_DECODER_H
 #define RLBP_DECODER_H
 
+#include <ap_int.h>
 #include "rlbp_graph.h"
+
+typedef ap_uint<RLBP_NUM_CHECKS> syn_t;   // bit c = detection event on check c
+typedef ap_uint<RLBP_NUM_VARS> vbits_t;   // bit v = error mechanism v
 
 // ---- LLR arithmetic --------------------------------------------------------
 // Default: float  -> bit-exact against the Python golden model.
@@ -49,17 +55,18 @@ enum {
     EXIT_MAX_ITER  = 3    // budget exhausted (WCET) -> OSD
 };
 
-// Top-level function (synthesised).
-//   syndrome[c]   detection event on check c (0/1)
-//   posterior[v]  LLRs at exit (input to the OSD fallback)
-//   hard[v]       BP hard decision at exit
-//   obs_bp        logical prediction from the hard decision (bit k = observable k)
+// Top-level function (synthesised). All ports are scalars / packed words.
+//   syndrome      detection events, bit c = check c
+//   hard          BP hard decision at exit, bit v = variable v
+//   obs_bp        logical prediction of the BP hard decision (bit k = observable k)
+//   obs           final logical prediction (= obs_bp, or OSD-0 when BP did not converge)
 //   iterations    BP iterations spent
-//   exit_reason   EXIT_*; OSD is required unless TRIVIAL or CONVERGED
-void rlbp_decode(const unsigned char syndrome[RLBP_NUM_CHECKS],
-                 llr_t posterior[RLBP_NUM_VARS],
-                 unsigned char hard[RLBP_NUM_VARS],
+//   exit_reason   EXIT_*; OSD-0 ran iff HALTED or MAX_ITER
+// -DRLBP_AXI puts every port and the block control on one AXI4-Lite slave.
+void rlbp_decode(syn_t syndrome,
+                 vbits_t *hard,
                  unsigned int *obs_bp,
+                 unsigned int *obs,
                  unsigned char *iterations,
                  unsigned char *exit_reason);
 

@@ -8,7 +8,8 @@
 #   RLBP_MODE  = float | fixed       (float: bit-exact vs Python; fixed: ap_fixed LLRs)
 #   RLBP_PART  = FPGA part           (default: Kria KV260 / K26 SOM, free license)
 #   RLBP_CLK   = clock period, ns    (default 3.333 = 300 MHz, the AURA core clock)
-#   RLBP_STEPS = "csim csynth cosim export"   (subset to run)
+#   RLBP_STEPS = "csim csynth cosim export impl"   (subset to run; impl = Vivado P&R)
+#   RLBP_AXI   = 1   put all ports + control on an AXI4-Lite slave (for a Zynq block design)
 #   RLBP_LLR   = "W I"  fixed-point LLR width / integer bits (default "10 6")
 #
 # Each mode gets its own solution (sol_float, sol_fixed); the project is not
@@ -29,6 +30,7 @@ if {$MODE eq "fixed"} {
     set LLR [env_or RLBP_LLR ""]
     if {[llength $LLR] == 2} { append CFLAGS " -DRLBP_LLR_W=[lindex $LLR 0] -DRLBP_LLR_I=[lindex $LLR 1]" }
 }
+if {[env_or RLBP_AXI 0]} { append CFLAGS " -DRLBP_AXI" }
 
 open_project rlbp_prj
 set_top rlbp_decode
@@ -44,4 +46,7 @@ if {[lsearch $STEPS csim]   >= 0} { csim_design -argv "vectors.txt" }
 if {[lsearch $STEPS csynth] >= 0} { csynth_design }
 if {[lsearch $STEPS cosim]  >= 0} { cosim_design -argv "vectors.txt" -trace_level none }
 if {[lsearch $STEPS export] >= 0} { export_design -format ip_catalog -rtl verilog }
+# Vivado synthesis + place & route of the kernel alone: real LUT/FF and timing
+# (report: sol_*/impl/report/verilog/export_impl.rpt)
+if {[lsearch $STEPS impl]   >= 0} { export_design -flow impl -rtl verilog -format ip_catalog }
 exit

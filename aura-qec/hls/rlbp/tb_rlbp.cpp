@@ -3,7 +3,7 @@
 // Replays vectors.txt (written by export_hls.py from the Python golden model)
 // and checks, per shot:
 //   exit reason, BP iterations, BP logical prediction   -- exact (float build)
-//   final logical prediction after OSD-0 fallback        -- exact (float build)
+//   final logical prediction (kernel's OSD-0 fallback)   -- exact (float build)
 // then prints LER / mean & p99 iterations / fallback rate for the kernel.
 //
 // Returns 0 on success (Vitis HLS treats non-zero as a failed simulation).
@@ -12,8 +12,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <cstdint>
-#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -25,50 +23,6 @@
 #ifndef RLBP_FIXED_LER_TOL
 #define RLBP_FIXED_LER_TOL 0.005
 #endif
-
-// ---------------------------------------------------------------- OSD-0
-// Port of aura.decoding.osd.osd0: insert check-matrix columns in posterior
-// order (most likely flipped first) into an incremental GF(2) basis; stop as
-// soon as the syndrome is in the span.
-struct Bits {
-    std::vector<uint64_t> w;
-    explicit Bits(int n = RLBP_NUM_CHECKS) : w((n + 63) / 64, 0) {}
-    bool any() const { for (auto x : w) if (x) return true; return false; }
-    int top() const {                       // index of the highest set bit, -1 if none
-        for (int i = (int)w.size() - 1; i >= 0; i--)
-            if (w[i]) return i * 64 + 63 - __builtin_clzll(w[i]);
-        return -1;
-    }
-    void set(int i) { w[i / 64] |= 1ull << (i % 64); }
-    void x(const Bits &o) { for (size_t i = 0; i < w.size(); i++) w[i] ^= o.w[i]; }
-};
-
-static unsigned osd0(const unsigned char syn[RLBP_NUM_CHECKS], const float post[RLBP_NUM_VARS]) {
-    Bits target;
-    for (int c = 0; c < RLBP_NUM_CHECKS; c++) if (syn[c]) target.set(c);
-    if (!target.any()) return 0;
-    std::vector<int> order(RLBP_NUM_VARS);
-    for (int v = 0; v < RLBP_NUM_VARS; v++) order[v] = v;
-    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return post[a] < post[b]; });
-    std::vector<Bits> piv_vec(RLBP_NUM_CHECKS);
-    std::vector<unsigned> piv_obs(RLBP_NUM_CHECKS, 0);
-    std::vector<bool> has(RLBP_NUM_CHECKS, false);
-    Bits s = target;
-    unsigned s_obs = 0;
-    for (int j : order) {
-        Bits v;
-        for (int k = VAR_PTR[j]; k < VAR_PTR[j + 1]; k++) v.set(E_CHK[VAR_EDGE[k]]);
-        unsigned vo = VAR_OBS[j];
-        int hb;
-        while ((hb = v.top()) >= 0 && has[hb]) { v.x(piv_vec[hb]); vo ^= piv_obs[hb]; }
-        if (hb < 0) continue;                     // dependent on more reliable columns
-        piv_vec[hb] = v; piv_obs[hb] = vo; has[hb] = true;
-        int hs;
-        while ((hs = s.top()) >= 0 && has[hs]) { s.x(piv_vec[hs]); s_obs ^= piv_obs[hs]; }
-        if (hs < 0) return s_obs;
-    }
-    return 0;                                     // unsolvable: predict no flip (as Python)
-}
 
 static unsigned parse_bits(const std::string &b) {   // "0110" -> bit k = char k
     unsigned x = 0;
@@ -96,22 +50,14 @@ int main(int argc, char **argv) {
         std::string sb, tob, bpob, fob;
         int g_exit, g_it;
         if (!(f >> sb >> tob >> g_exit >> g_it >> bpob >> fob)) { std::printf("truncated vectors at %d\n", i); return 2; }
-        unsigned char syn[RLBP_NUM_CHECKS];
+        syn_t syn = 0;
         for (int c = 0; c < RLBP_NUM_CHECKS; c++) syn[c] = sb[c] == '1';
 
-        llr_t post[RLBP_NUM_VARS];
-        unsigned char hard[RLBP_NUM_VARS];
-        unsigned int obs = 0;
+        vbits_t hard = 0;
+        unsigned int obs = 0, final_obs = 0;
         unsigned char it = 0, ex = 0;
-        rlbp_decode(syn, post, hard, &obs, &it, &ex);
-
-        unsigned final_obs = obs;
-        if (ex == EXIT_HALTED || ex == EXIT_MAX_ITER) {
-            float pf[RLBP_NUM_VARS];
-            for (int v = 0; v < RLBP_NUM_VARS; v++) pf[v] = (float)post[v];
-            final_obs = osd0(syn, pf);
-            fallbacks++;
-        }
+        rlbp_decode(syn, &hard, &obs, &final_obs, &it, &ex);
+        fallbacks += ex == EXIT_HALTED || ex == EXIT_MAX_ITER;
         halts += ex == EXIT_HALTED;
         total_it += it;
         its.push_back(it);

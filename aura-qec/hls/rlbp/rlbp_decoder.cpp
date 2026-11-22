@@ -144,20 +144,110 @@ ITER:
     return reason;
 }
 
-void rlbp_decode(const unsigned char syndrome[RLBP_NUM_CHECKS],
-                 llr_t posterior[RLBP_NUM_VARS],
-                 unsigned char hard[RLBP_NUM_VARS],
+// ---- OSD-0 fallback: aura.decoding.osd.osd0 ---------------------------------
+// Insert check-matrix columns in posterior order (most likely flipped first,
+// ties by index = stable sort) into an incremental GF(2) basis; stop as soon as
+// the syndrome lies in the span. Unsolvable syndrome -> predict no flip.
+//   1. rank[v] = position of v in the stable ascending sort of post  (V cycles,
+//      V comparators in parallel); order[rank[v]] = v                (V cycles);
+//   2. walk r = 0..V-1: read the column of order[r] from the VAR_COL ROM, reduce
+//      it against the pivots top-down, add it as a new pivot, then reduce the
+//      syndrome; stop when the syndrome is cleared.
+static syn_t var_col(int v) {
+#pragma HLS INLINE
+    syn_t c = 0;
+    for (int w = 0; w < RLBP_COL_WORDS; w++) {
+#pragma HLS UNROLL
+        const int lo = 32 * w, hi = (32 * w + 31 < RLBP_NUM_CHECKS - 1) ? 32 * w + 31 : RLBP_NUM_CHECKS - 1;
+        c.range(hi, lo) = VAR_COL[v * RLBP_COL_WORDS + w];
+    }
+    return c;
+}
+
+static unsigned int osd0(syn_t syn, const llr_t post[RLBP_NUM_VARS]) {
+    unsigned char rank[RLBP_NUM_VARS];
+#pragma HLS ARRAY_PARTITION variable = rank complete
+    unsigned char order[RLBP_NUM_VARS];        // order[r] = variable of rank r (small RAM)
+OSD_RANK0:
+    for (int v = 0; v < RLBP_NUM_VARS; v++) {
+#pragma HLS UNROLL
+        rank[v] = 0;
+    }
+OSD_RANK:
+    for (int u = 0; u < RLBP_NUM_VARS; u++) {
+#pragma HLS PIPELINE II = 1
+        const llr_t pu = post[u];
+        for (int v = 0; v < RLBP_NUM_VARS; v++) {
+#pragma HLS UNROLL
+            if (pu < post[v] || (pu == post[v] && u < v)) rank[v]++;
+        }
+    }
+OSD_PERM:
+    for (int v = 0; v < RLBP_NUM_VARS; v++) {
+#pragma HLS PIPELINE II = 1
+        order[rank[v]] = (unsigned char)v;
+    }
+
+    syn_t piv[RLBP_NUM_CHECKS];                // pivot vectors, indexed by their top bit
+    unsigned int pobs[RLBP_NUM_CHECKS];        // observables of each pivot
+#pragma HLS ARRAY_PARTITION variable = piv complete
+#pragma HLS ARRAY_PARTITION variable = pobs complete
+    syn_t has = 0;                             // which pivot slots are filled
+    syn_t s = syn;
+    unsigned int s_obs = 0, result = 0;
+OSD_WALK:
+    for (int r = 0; r < RLBP_NUM_VARS; r++) {
+#pragma HLS PIPELINE off
+#pragma HLS LOOP_TRIPCOUNT min = 1 max = RLBP_NUM_VARS avg = 20
+        const int j = order[r];
+        syn_t v = var_col(j);
+        unsigned int vo = VAR_OBS[j];
+        bool stop = false;
+        int hb = -1;
+    OSD_RED_V:
+        for (int b = RLBP_NUM_CHECKS - 1; b >= 0; b--) {
+#pragma HLS UNROLL
+            if (!stop && v[b]) {
+                if (has[b]) { v ^= piv[b]; vo ^= pobs[b]; }
+                else { stop = true; hb = b; }
+            }
+        }
+        if (hb < 0) continue;                  // dependent on more reliable columns
+    OSD_INS:
+        for (int b = 0; b < RLBP_NUM_CHECKS; b++) {
+#pragma HLS UNROLL
+            if (b == hb) { piv[b] = v; pobs[b] = vo; has[b] = 1; }
+        }
+        bool st = false;
+    OSD_RED_S:
+        for (int b = RLBP_NUM_CHECKS - 1; b >= 0; b--) {
+#pragma HLS UNROLL
+            if (!st && s[b]) {
+                if (has[b]) { s ^= piv[b]; s_obs ^= pobs[b]; }
+                else st = true;
+            }
+        }
+        if (s == 0) { result = s_obs; break; }
+    }
+    return result;
+}
+
+void rlbp_decode(syn_t syndrome,
+                 vbits_t *hard,
                  unsigned int *obs_bp,
+                 unsigned int *obs,
                  unsigned char *iterations,
                  unsigned char *exit_reason) {
-    // ---- interfaces ---------------------------------------------------------
-    // Default block-level ap_ctrl_hs + ap_memory arrays: simplest for C/RTL
-    // co-simulation. For a Zynq/Alveo system, switch to AXI, e.g.:
-    //   #pragma HLS INTERFACE mode=s_axilite port=return
-    //   #pragma HLS INTERFACE mode=s_axilite port=obs_bp   (etc. for scalars)
-    //   #pragma HLS INTERFACE mode=bram  port=syndrome     (or m_axi / axis)
-
-    llr_t tot[RLBP_NUM_VARS];        // posterior LLRs (written to the port once, at exit)
+#ifdef RLBP_AXI
+#pragma HLS INTERFACE mode = s_axilite port = syndrome
+#pragma HLS INTERFACE mode = s_axilite port = hard
+#pragma HLS INTERFACE mode = s_axilite port = obs_bp
+#pragma HLS INTERFACE mode = s_axilite port = obs
+#pragma HLS INTERFACE mode = s_axilite port = iterations
+#pragma HLS INTERFACE mode = s_axilite port = exit_reason
+#pragma HLS INTERFACE mode = s_axilite port = return
+#endif
+    llr_t tot[RLBP_NUM_VARS];        // posterior LLRs at exit
     bool hd[RLBP_NUM_VARS];          // hard decision
     bool s[RLBP_NUM_CHECKS];
 #pragma HLS ARRAY_PARTITION variable = tot complete
@@ -169,8 +259,8 @@ void rlbp_decode(const unsigned char syndrome[RLBP_NUM_CHECKS],
     bool unexplainable = false;
 LOAD_S:
     for (int c = 0; c < RLBP_NUM_CHECKS; c++) {
-#pragma HLS PIPELINE II = 1
-        s[c] = syndrome[c] & 1;
+#pragma HLS UNROLL
+        s[c] = syndrome[c];
         w0 += s[c];
         if (s[c] && CHK_PTR[c] == CHK_PTR[c + 1]) unexplainable = true;
     }
@@ -185,16 +275,20 @@ INIT_V:
     unsigned char reason = w0 == 0 ? EXIT_TRIVIAL : EXIT_MAX_ITER;
     if (w0 != 0 && !unexplainable) reason = bp_iterate(s, w0, tot, hd, &t_exit);
 
-    // ---- outputs: one write per output port -----------------------------------
+    // ---- packed outputs
+    vbits_t hb = 0;
     unsigned int ob = 0;
 OUT_V:
     for (int v = 0; v < RLBP_NUM_VARS; v++) {
-#pragma HLS PIPELINE II = 1
-        posterior[v] = tot[v];
-        hard[v] = hd[v];
+#pragma HLS UNROLL
+        hb[v] = hd[v];
         if (hd[v]) ob ^= VAR_OBS[v];
     }
+    unsigned int fin = ob;
+    if (reason == EXIT_HALTED || reason == EXIT_MAX_ITER) fin = osd0(syndrome, tot);
+    *hard = hb;
     *obs_bp = ob;
+    *obs = fin;
     *iterations = (unsigned char)t_exit;
     *exit_reason = reason;
 }

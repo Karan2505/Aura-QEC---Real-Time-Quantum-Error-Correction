@@ -59,68 +59,81 @@ Add `rlbp_decoder.cpp` as a source, add `tb_rlbp.cpp` and `vectors.txt` as testb
 the C-sim / co-sim argument to `vectors.txt`. Then run C Simulation, C Synthesis and
 Co-Simulation.
 
-Options (environment variables): `RLBP_MODE=fixed` switches LLRs to
-`ap_fixed<10,6>` (override with `RLBP_LLR="16 8"`). Use fixed for synthesis;
-float is the bit-exact reference for csim. The pass criterion then becomes "LER within 0.5 % of golden",
-since bit-exactness no longer applies. `RLBP_PART` defaults to the Kria K26
-(`xck26-sfvc784-2LV-c`). `RLBP_CLK` defaults to 3.333 ns, the 300 MHz AURA core
-clock. `RLBP_STEPS` defaults to `"csim csynth cosim"`; add `export` to package the IP.
+Options (environment variables):
 
-Look at:
+* `RLBP_MODE=fixed` switches LLRs to `ap_fixed<10,6>`; override the width with `RLBP_LLR="16 8"`.
+  Use fixed for synthesis. Float is the bit-exact reference for csim; in fixed mode the
+  pass criterion is "LER within 0.5 % of golden".
+* `RLBP_PART` defaults to the Kria K26 (`xck26-sfvc784-2LV-c`).
+* `RLBP_CLK` defaults to 3.333 ns, the 300 MHz AURA core clock.
+* `RLBP_STEPS` defaults to `"csim csynth cosim"`. Add `export` to package the IP, or `impl`
+  for Vivado synthesis and place & route of the kernel alone (real LUT/FF and timing).
+* `RLBP_AXI=1` puts every port and the block control on one AXI4-Lite slave, for a Zynq
+  block design.
 
-* `rlbp_prj/sol_float/csim/report/rlbp_decode_csim.log`: the PASS line and LER;
-* `rlbp_prj/sol_float/syn/report/rlbp_decode_csynth.rpt`: latency per iteration, II, and resources;
-* `rlbp_prj/sol_float/sim/report/rlbp_decode_cosim.rpt`: min/avg/max latency over the real shot mix.
+Each mode gets its own solution (`sol_float`, `sol_fixed`). The project is not reset between runs.
 
-The early exit only shows up here, because most shots are trivial or converge in 1–3 iterations.
+Look at (replace `sol_fixed` with `sol_float` for float runs):
+
+* `rlbp_prj/sol_fixed/csim/report/rlbp_decode_csim.log`: the PASS line and LER;
+* `rlbp_prj/sol_fixed/syn/report/rlbp_decode_csynth.rpt`: latency per iteration, II, and resources;
+* `rlbp_prj/sol_fixed/sim/report/rlbp_decode_cosim.rpt`: min/avg/max latency over the real shot mix;
+* `rlbp_prj/sol_fixed/impl/report/verilog/rlbp_decode_export.rpt`: Vivado resources and timing (`impl` step).
 
 ## Kernel interface
 
 ```cpp
-void rlbp_decode(const unsigned char syndrome[NUM_CHECKS],   // detection events (basis detectors)
-                 llr_t posterior[NUM_VARS],                  // LLRs at exit -> OSD input
-                 unsigned char hard[NUM_VARS],               // BP hard decision
-                 unsigned int *obs_bp,                       // logical prediction (bit k = observable k)
+void rlbp_decode(syn_t syndrome,              // ap_uint<NUM_CHECKS>, bit c = detection event on check c
+                 vbits_t *hard,               // ap_uint<NUM_VARS>, BP hard decision at exit
+                 unsigned int *obs_bp,        // logical prediction of the BP hard decision
+                 unsigned int *obs,           // final logical prediction (BP, or OSD-0 fallback)
                  unsigned char *iterations,
-                 unsigned char *exit_reason);                // 0 trivial, 1 converged, 2 RL-halted, 3 max-iter
+                 unsigned char *exit_reason); // 0 trivial, 1 converged, 2 RL-halted, 3 max-iter
 ```
 
-OSD-0 is required when `exit_reason` is 2 or 3. The kernel does not run it yet;
-the testbench does, in C++, as a port of `osd.py`.
+The kernel is the complete decoder. When `exit_reason` is 2 or 3 it runs OSD-0
+on chip, as a port of `osd.py`:
+1. Rank the posteriors with 55 parallel comparators (V cycles).
+2. Insert the columns into a GF(2) basis in that order, stopping as soon as the syndrome is solved.
 
-## Status and next steps
+The column bitmasks come from `VAR_COL` in `rlbp_graph.h`.
 
-* **Done:** float kernel bit-exact against Python on surface-3 (device shots,
-  1000 vectors) and surface-5 (DEM shots, 3000 vectors). The comparison
-  covers exit reason, iterations, BP logical and post-OSD logical.
-* **Fully parallel node array.** The message arrays are completely
-  partitioned and every check, variable and syndrome loop is unrolled over the
-  compile-time graph, so a BP iteration is a short pipeline instead of an
-  edge-by-edge walk. The float build stays bit-exact; **synthesise with
-  `RLBP_MODE=fixed`** (default `ap_fixed<10,6,AP_TRN,AP_SAT>`, set by `RLBP_LLR="W I"`).
+## Status
 
-  Results on surface-3 r=3 (16 checks, 55 vars, 94 edges), KV260, 300 MHz, Vitis HLS 2025.1:
+* **Bit-exact:** the float kernel, including the on-chip OSD-0, matches Python on surface-3 (device
+  shots, 1000 vectors). The serial version also matched on surface-5 (DEM shots, 3000 vectors).
+  The comparison covers exit reason, iterations, BP logical and final logical.
+* **Fully parallel node array:** the message arrays are completely partitioned, and every check,
+  variable and syndrome loop is unrolled over the compile-time graph. A BP iteration is a 13-cycle
+  pipeline. I/O uses packed words, so the syndrome loads in one cycle.
 
-  | | serial float (previous) | parallel fixed 10-bit |
-  |---|---|---|
-  | cycles / BP iteration | 3938 | **13** |
-  | worst case (30 iters) | 118,362 cycles (~395 us) | **476 cycles (~1.6 us)** |
-  | co-sim avg / max over 1000 shots | 2160 / 43,870 cycles | **86 / 249 cycles** (0.29 / 0.83 us) |
-  | estimated clock | 3.64 ns (timing missed) | 2.42 ns (met) |
-  | LUT / FF | 4.3k / 2.9k | 33.6k (28%) / 7.9k (3%) |
-  | LER (golden 2.20%) | 2.20% (bit-exact) | 2.30% |
+Results on surface-3 r=3 (16 checks, 55 vars, 94 edges), KV260, 300 MHz, Vitis 2025.1:
 
-  LLR widths from 16 down to 8 bits gave the same LER (2.3–2.4%) on these
-  vectors. Of the ~86 average cycles, ~75 are the serial `syndrome` load and
-  `posterior` write over `ap_memory`.
+| | serial float (first version) | parallel fixed 10-bit + on-chip OSD |
+|---|---|---|
+| cycles / BP iteration | 3938 | **13** |
+| co-sim min / avg / max, 1000 shots | 119 / 2160 / 43,870 cycles (BP only) | **5 / 20 / 379 cycles** (incl. OSD) |
+| time at 300 MHz (avg / max) | 7.2 us / 146 us | **0.07 us / 1.26 us** |
+| worst case (30 iters + full OSD) | 118,362 cycles | 1526 cycles (~5.1 us) |
+| clock | 3.64 ns HLS estimate (missed) | 2.80 ns after Vivado synthesis (met) |
+| LUT / FF / DSP / BRAM | 4.3k / 2.9k / 5 / 6 (HLS estimate) | **11.3k (9.6%) / 8.6k (3.7%) / 2 / 1** (Vivado synthesis) |
+| LER (golden 2.20%) | 2.20% (bit-exact) | 2.30% |
 
-  Next steps:
-  1. Check the real LUT count after Vivado implementation (HLS estimates are pessimistic).
-     Surface-5 is ~5x larger; if it does not fit fully parallel, use partial unrolling
-     (process checks in groups) instead.
-  2. Wider I/O: an `ap_uint<NUM_CHECKS>` syndrome word and packed outputs remove the
-     ~75 cycles of array transfer.
-  3. Move OSD-0 into hardware (bitset Gaussian elimination with `ap_uint<NUM_CHECKS>`)
-     or run it on the Zynq PS.
-  4. AXI interfaces (`s_axilite` control, `axis` syndrome stream from AURA-Link) for
-     system integration.
+Notes:
+
+* The HLS LUT estimate for the parallel design is 41k; Vivado synthesis gives 11.3k, so trust
+  the `impl` numbers.
+* LLR widths from 16 down to 8 bits gave the same LER (2.3–2.4%) on these vectors.
+* OSD-0 accounts for about 1100 of the worst-case cycles, but runs on only about 4% of shots.
+* Vivado place & route ran out of memory (`bad allocation`) on this 7 GB-RAM PC during report
+  generation, after placement. The resource and timing figures above are post-synthesis.
+
+## Next steps
+
+1. Re-run `impl` on a machine with more RAM to get post-route timing.
+2. Surface-5 is about 5x larger. If it does not fit fully parallel, use partial unrolling
+   (process checks in groups).
+3. Speed up the OSD walk (about 18 cycles per column now). Options: pipeline the GF(2)
+   reduction, or stop the walk after NUM_CHECKS independent pivots.
+4. AXI-Stream syndrome input straight from AURA-Link. `RLBP_AXI` covers AXI4-Lite control but
+   has not been synthesised yet.

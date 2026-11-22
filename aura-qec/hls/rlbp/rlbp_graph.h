@@ -71,6 +71,17 @@ static const unsigned int VAR_OBS[55] = {
     1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
     1, 0, 0, 0, 1, 0, 0
 };
+// check-matrix column of variable v (bit c = check c): words VAR_COL[v*1 .. v*1+0]
+#define RLBP_COL_WORDS    1
+static const unsigned int VAR_COL[55] = {
+    1u, 3u, 17u, 2u, 6u, 18u, 34u, 4u,
+    12u, 20u, 36u, 68u, 8u, 40u, 72u, 136u,
+    16u, 48u, 272u, 32u, 96u, 288u, 544u, 64u,
+    192u, 320u, 576u, 1088u, 128u, 640u, 1152u, 2176u,
+    256u, 768u, 4352u, 512u, 1536u, 4608u, 8704u, 1024u,
+    3072u, 5120u, 9216u, 17408u, 2048u, 10240u, 18432u, 34816u,
+    4096u, 12288u, 8192u, 24576u, 16384u, 49152u, 32768u
+};
 // learned policy: 1 = HALT (hand the shot to OSD), 0 = CONTINUE
 static const unsigned char HALT_TABLE[1320] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
