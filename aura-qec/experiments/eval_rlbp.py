@@ -174,7 +174,9 @@ def main():
     ap.add_argument("--decoders", default=",".join(DECODERS))
     ap.add_argument("--max-iter", type=int, default=30)
     ap.add_argument("--alpha", type=float, default=0.75)
-    ap.add_argument("--stall-k", type=int, default=4)
+    ap.add_argument("--stall-k", default="4", help="stall thresholds K, comma-separated (one 'stallK' row each)")
+    ap.add_argument("--fail-costs", default="2000",
+                    help="RL reward weight of a logical failure, comma-separated (one policy each)")
     ap.add_argument("--profile", default="sota")
     ap.add_argument("--seed", type=int, default=3)
     ap.add_argument("--out", default=str(HERE / "results" / "eval_rlbp.csv"))
@@ -187,7 +189,15 @@ def main():
     scales = [float(x) for x in a.scales.split(",")]
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    rm = RewardModel(iter_cost=1.0, osd_cost=20.0, fail_cost=2000.0)
+    stall_ks = [int(x) for x in a.stall_k.split(",")]
+    fail_costs = [float(x) for x in a.fail_costs.split(",")]
+    rms = {fc: RewardModel(iter_cost=1.0, osd_cost=20.0, fail_cost=fc) for fc in fail_costs}
+
+    def rl_name(fc):
+        return "rlbp" if len(fail_costs) == 1 else f"rlbp_f{fc:g}"
+
+    def stall_name(k):
+        return "stall" if len(stall_ks) == 1 else f"stall{k}"
 
     rows = []
     for code in [c.strip() for c in a.codes.split(",") if c.strip()]:
@@ -196,11 +206,12 @@ def main():
         g1 = TannerGraph(dem)
         print(f"{code} r={rounds}: checks {g1.num_checks}, vars {g1.num_vars}, edges {g1.num_edges}, "
               f"observables {g1.num_observables}")
-        shared_policy = None
+        shared = {}
         if "rlbp" in decs and a.train_scale > 0:
             gt = TannerGraph(scaled(dem, a.train_scale))
-            shared_policy, _ = train_q_policy(MinSumBP(gt, max_iter=a.max_iter, alpha=a.alpha), dem_episodes(gt),
-                                              episodes=a.train, reward=rm, seed=a.seed)
+            bpt = MinSumBP(gt, max_iter=a.max_iter, alpha=a.alpha)
+            for fc in fail_costs:
+                shared[fc], _ = train_q_policy(bpt, dem_episodes(gt), episodes=a.train, reward=rms[fc], seed=a.seed)
         for lam in scales:
             g = TannerGraph(scaled(dem, lam))
             bp = MinSumBP(g, max_iter=a.max_iter, alpha=a.alpha)
@@ -222,12 +233,17 @@ def main():
                 names = tuple(n for n in ("bp", "bposd") if n in decs)
                 point += run_bp(g, bp, s, o, None, "bposd" in decs, names)
             if "stall" in decs:
-                point += run_bp(g, bp, s, o, StallPolicy(a.stall_k), True, ("stall",))
+                for k in stall_ks:
+                    point += run_bp(g, bp, s, o, StallPolicy(k), True, (stall_name(k),))
             if "rlbp" in decs:
-                pol = shared_policy
-                if pol is None:
-                    pol, _ = train_q_policy(bp, dem_episodes(g), episodes=a.train, reward=rm, seed=a.seed)
-                point += run_bp(g, bp, s, o, pol, True, ("rlbp",))
+                for fc in fail_costs:
+                    pol = shared.get(fc)
+                    if pol is None:
+                        t0 = time.perf_counter()
+                        pol, _ = train_q_policy(bp, dem_episodes(g), episodes=a.train, reward=rms[fc], seed=a.seed)
+                        print(f"  lambda={lam:<5g} trained {rl_name(fc)} in {time.perf_counter() - t0:.0f} s, "
+                              f"{int(pol.halt_table.sum())} HALT states")
+                    point += run_bp(g, bp, s, o, pol, True, (rl_name(fc),))
             for r in point:
                 r.update(meta)
                 print(f"  lambda={lam:<5g} {r['decoder']:<6} LER {r['ler']:.2e} [{r['ci_lo']:.2e},{r['ci_hi']:.2e}]"
@@ -265,6 +281,8 @@ def plot(rows, path: Path):
             y = np.array([r["ler"] for r in rs])
             err = np.array([[r["ler"] - r["ci_lo"] for r in rs], [r["ci_hi"] - r["ler"] for r in rs]])
             ax[0].errorbar(x, y, yerr=err, marker="o", ms=3, capsize=2, label=lbl)
+            if len(x) < 2:
+                ax[0].scatter(x, y, s=8)
             if dec != "mwpm":
                 ax[1].plot(x, [r["mean_iter"] for r in rs], marker="o", ms=3, label=lbl)
                 ax[2].plot(x, [r["max_cycles"] for r in rs], marker="o", ms=3, label=lbl)
