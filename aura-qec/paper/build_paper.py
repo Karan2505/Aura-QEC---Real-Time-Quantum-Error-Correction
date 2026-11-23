@@ -131,10 +131,19 @@ def fig_bb72_tradeoff():
         r = single[n]
         eb(ax, [float(r["mean_iter"])], [float(r["ler"])], [float(r["ci_lo"])], [float(r["ci_hi"])], color=c,
            marker=m, ms=8 if n == "oam_learned" else 6, lw=0, ecolor=c, label=lab)
-    ax.set_xlabel("Mean BP iterations per shot")
+    pair = {(r["decoder"], c): r for c in (100, 200) for r in rows(f"oam_pair_cap{c}.csv")
+            if float(r["scale"]) == 1.0}
+    r = pair[("oam48", 200)]
+    eb(ax, [float(r["mean_iter"])], [float(r["ler"])], [float(r["ci_lo"])], [float(r["ci_hi"])], color=C1,
+       marker="o", ms=6, lw=0, ecolor=C1, mfc="white", label="OAM-BP, check-aware 48-state Γ")
+    for c, lab, m in ((200, "OAM pair, cap 200 each", "*"), (100, "OAM pair, cap 100 each", "P")):
+        r = pair[("pair_both", c)]
+        eb(ax, [float(r["mean_iter"])], [float(r["ler"])], [float(r["ci_lo"])], [float(r["ci_hi"])], color="#184f95",
+           marker=m, ms=11 if m == "*" else 8, lw=0, ecolor="#184f95", label=lab)
+    ax.set_xlabel("Mean BP iterations per shot (sum over runs)")
     ax.set_ylabel("Logical error rate")
     ax.set_xlim(0, 60)
-    ax.set_ylim(.055, .085)
+    ax.set_ylim(.050, .085)
     ax.legend(fontsize=8.2, loc="upper center", bbox_to_anchor=(0.5, -0.17), ncol=2)
     return save(fig, "p2_tradeoff.png")
 
@@ -171,7 +180,8 @@ def fig_bb72_lambda():
     series = [("fixed_0.125", "Fixed γ = 0.125", C4, "s", single, True),
               ("fixed_0.25", "Fixed γ = 0.25", C2, "D", single, True),
               ("oam_learned", "OAM-BP, learned Γ", C1, "o", single, True),
-              ("ens_fixed4", "Ensemble, 4 members", C3, "v", ens, False)]
+              ("ens_fixed4", "Ensemble, 4 members", C3, "v", ens, False),
+              ("pair_both", "OAM pair (16 + 48-state Γ)", "#184f95", "*", rows("oam_pair_cap200.csv"), False)]
     for n, lab, c, m, src, cap in series:
         rs = sorted([r for r in src if r["decoder"] == n and (not cap or int(r["budget"]) == 200)],
                     key=lambda r: float(r["scale"]))
@@ -250,12 +260,14 @@ FIGS = {
     "tradeoff": (fig_bb72_tradeoff(), "Figure 2. BB-72 [[72,12,6]] at calibrated device noise (λ = 1), 200-iteration "
                                       "worst case, same 10,000 test shots for every decoder. Whiskers: 95% Wilson "
                                       "intervals. A single learned OAM-BP run sits at the ensemble's and Relay-BP-1's "
-                                      "error rate with about half of the ensemble's iterations."),
+                                      "error rate with about half of the ensemble's iterations; the OAM pair (two "
+                                      "learned tables, min-weight) is below every other decoder. Iterations are "
+                                      "summed over runs."),
     "gamma": (fig_gamma_heat(), "Figure 3. The learned memory table Γ (BB-72, λ = 1). Stable variables keep a weak "
                                 "memory (γ ≈ 0.05–0.17); most states of variables that keep flipping late in "
                                 "decoding get strong memory (γ ≈ 0.27–0.33), damping the period-2 oscillation that defeats plain BP."),
     "lambda": (fig_bb72_lambda(), "Figure 4. BB-72 logical error rate against noise scale (10,000 shots per point, cap "
-                                  "200). The table is trained only at λ = 1; it transfers to lower noise without "
+                                  "200 per run). The tables are trained only at λ = 1; they transfer to lower noise without "
                                   "retraining."),
     "fpga": (fig_fpga(), "Figure 5. Measured surface-3 builds on the Kria KV260 (XCK26, 300 MHz, post-route). Left: "
                          "share of device resources. Right: co-simulation latency per decode including the OSD-0 "
