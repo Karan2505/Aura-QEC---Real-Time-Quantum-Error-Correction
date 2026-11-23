@@ -7,7 +7,9 @@ OSD-0 is run on the following posteriors of every non-converged shot:
   final   posterior at the iteration BP stopped           (current decoder)
   best    posterior at the iteration with the fewest unsatisfied checks
   avg2    mean of the last two iterations' posteriors      (cancels period-2 oscillation)
-  mean    running mean over all iterations
+  mean    running mean over all iterations (likelihood accumulation, Jiang et al. 2007 /
+          Li & Feng arXiv:0710.5230)
+  minllr  running minimum of each LLR over all iterations (NVIDIA cudaq-qec "min_llr" OSD init)
 The hardware cost of best/avg2/mean is one extra V-entry register bank.
 
 Usage (from aura-qec/):
@@ -25,7 +27,7 @@ import numpy as np
 from eval_rlbp import HERE, StallPolicy, default_rounds, load_dem, scaled, wilson
 from aura.decoding import MinSumBP, TannerGraph, osd0
 
-INPUTS = ("final", "best", "avg2", "mean")
+INPUTS = ("final", "best", "avg2", "mean", "minllr")
 
 
 class Tracker:
@@ -37,6 +39,7 @@ class Tracker:
         self.prev = np.zeros((shots, num_vars), np.float32)
         self.cur = np.zeros((shots, num_vars), np.float32)
         self.sum = np.zeros((shots, num_vars), np.float32)
+        self.min = np.full((shots, num_vars), np.inf, np.float32)
         self.count = np.zeros(shots, np.int64)
 
     def __call__(self, f, done, halted, tot):
@@ -49,6 +52,7 @@ class Tracker:
         self.prev[idx] = np.where((self.count[idx] > 0)[:, None], self.cur[idx], post)
         self.cur[idx] = post
         self.sum[idx] += post
+        self.min[idx] = np.minimum(self.min[idx], post)
         self.count[idx] += 1
 
     def posterior(self, kind: str, i: int, final: np.ndarray) -> np.ndarray:
@@ -58,6 +62,8 @@ class Tracker:
             return self.best[i]
         if kind == "avg2":
             return 0.5 * (self.prev[i] + self.cur[i])
+        if kind == "minllr":
+            return self.min[i]
         return self.sum[i] / self.count[i]
 
 
