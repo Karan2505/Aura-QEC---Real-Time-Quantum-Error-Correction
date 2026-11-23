@@ -71,13 +71,16 @@ static unsigned char bp_iterate(const bool s[RLBP_NUM_CHECKS], int w0,
 #if RLBP_MEM
     llr_t lam[RLBP_NUM_VARS];        // memory-mixed prior (OAM-BP)
     ap_uint<4> hist[RLBP_NUM_VARS];  // last 4 hard-decision flips
+    bool hprev[RLBP_NUM_VARS];       // previous hard decision (local: hd is an output-only port in RTL)
 #pragma HLS ARRAY_PARTITION variable = lam complete
 #pragma HLS ARRAY_PARTITION variable = hist complete
+#pragma HLS ARRAY_PARTITION variable = hprev complete
 INIT_MEM:
     for (int v = 0; v < RLBP_NUM_VARS; v++) {
 #pragma HLS UNROLL
         lam[v] = PRIOR[v];
         hist[v] = 0;
+        hprev[v] = false;
     }
 #endif
     const llr_t alpha = RLBP_ALPHA;
@@ -94,6 +97,9 @@ INIT_E:
 ITER:
     for (int t = 1; t <= RLBP_MAX_ITER; t++) {
 #pragma HLS LOOP_TRIPCOUNT min = 1 max = RLBP_MAX_ITER avg = 3
+        // Each iteration depends on the previous one; overlapping them (auto-pipelining) only lets a
+        // speculative iteration t+1 run past a converged exit and corrupt the state, so keep it sequential.
+#pragma HLS PIPELINE off
         // ---- check-node update: normalised min-sum, min1/min2 (all checks in parallel)
     CHECK:
         for (int c = 0; c < RLBP_NUM_CHECKS; c++) {
@@ -141,12 +147,15 @@ ITER:
             llr_t tv = acc + lam[v];
             {   // OAM-BP: per-variable memory strength from the local oscillation state
                 const bool nh = tv < 0;
-                const ap_uint<4> h = (ap_uint<4>)((hist[v] << 1) | ap_uint<1>(nh != hd[v]));
+                const ap_uint<4> h = (ap_uint<4>)((hist[v] << 1) | ap_uint<1>(nh != hprev[v]));
                 hist[v] = h;
+                hprev[v] = nh;
                 const int pc = (int)h[0] + (int)h[1] + (int)h[2] + (int)h[3];
                 const int st = ((pc > 3 ? 3 : pc) * 2 + (nh ? 1 : 0)) * 2 + (t > RLBP_MEM_SPLIT ? 1 : 0);
                 const mem_t gm = MEM_TABLE[st];
-                lam[v] = llr_t((mem_t(1) - gm) * PRIOR[v] + gm * tv);
+                // (1-g)*P + g*tv written as P + g*(tv-P): same exact value, and avoids the
+                // (1 - g) pre-adder form, which HLS 2025.1 mapped to RTL that disagrees with C
+                lam[v] = llr_t(PRIOR[v] + gm * (tv - PRIOR[v]));
             }
 #else
             llr_t tv = acc + PRIOR[v];
