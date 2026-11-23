@@ -102,6 +102,20 @@ def test_posterior_avg_reports_mean_of_last_two_iterations(s5):
         MinSumBP(g, posterior_avg=3)
 
 
+def test_memory_table_zero_is_plain_bp_and_nonzero_changes_decoding(s5):
+    g, _, _ = s5
+    _, s, _ = g.sample(400, np.random.default_rng(7), scale=3.0)
+    plain = MinSumBP(g, max_iter=20, alpha=1.0).decode(s)
+    zero = MinSumBP(g, max_iter=20, alpha=1.0, memory_table=np.zeros(16)).decode(s)
+    assert (plain.errors == zero.errors).all() and (plain.iterations == zero.iterations).all()
+    assert np.array_equal(plain.posterior, zero.posterior)
+    table = np.linspace(0.05, 0.4, 16)
+    mem = MinSumBP(g, max_iter=20, alpha=1.0, memory_table=table).decode(s)
+    assert (mem.iterations != plain.iterations).any()           # the memory term actually acts
+    with pytest.raises(ValueError):
+        MinSumBP(g, memory_table=np.zeros(8))
+
+
 def test_osd0_solves_every_explainable_syndrome(s5):
     g, _, _ = s5
     rng = np.random.default_rng(4)

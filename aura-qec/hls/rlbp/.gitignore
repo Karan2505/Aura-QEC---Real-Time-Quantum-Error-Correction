@@ -8,3 +8,4 @@ dfx_runtime.txt
 .Xil/
 vitis_hls.log
 .hls.failed
+builds/

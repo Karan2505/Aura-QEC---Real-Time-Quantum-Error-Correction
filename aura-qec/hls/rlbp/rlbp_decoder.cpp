@@ -34,6 +34,9 @@ unsigned short rlbp_state(int t, int unsat, int unsat0, int stall) {
 
 // prior LLRs as constants of type llr_t (no float->fixed conversion in hardware)
 static const llr_t PRIOR[RLBP_NUM_VARS] = RLBP_PRIOR_INIT;
+#if RLBP_MEM
+static const mem_t MEM_TABLE[16] = RLBP_MEM_TABLE_INIT;
+#endif
 
 static llr_t llr_abs(llr_t x) {
 #pragma HLS INLINE
@@ -64,6 +67,18 @@ static unsigned char bp_iterate(const bool s[RLBP_NUM_CHECKS], int w0,
 #if RLBP_POST_AVG == 2
     llr_t prev[RLBP_NUM_VARS];       // previous iteration's posterior
 #pragma HLS ARRAY_PARTITION variable = prev complete
+#endif
+#if RLBP_MEM
+    llr_t lam[RLBP_NUM_VARS];        // memory-mixed prior (OAM-BP)
+    ap_uint<4> hist[RLBP_NUM_VARS];  // last 4 hard-decision flips
+#pragma HLS ARRAY_PARTITION variable = lam complete
+#pragma HLS ARRAY_PARTITION variable = hist complete
+INIT_MEM:
+    for (int v = 0; v < RLBP_NUM_VARS; v++) {
+#pragma HLS UNROLL
+        lam[v] = PRIOR[v];
+        hist[v] = 0;
+    }
 #endif
     const llr_t alpha = RLBP_ALPHA;
     int best = w0, stall = 0;
@@ -122,7 +137,20 @@ ITER:
 #pragma HLS UNROLL
                 if (p0 + d < p1) acc += m_cv[VAR_EDGE[p0 + d]];
             }
+#if RLBP_MEM
+            llr_t tv = acc + lam[v];
+            {   // OAM-BP: per-variable memory strength from the local oscillation state
+                const bool nh = tv < 0;
+                const ap_uint<4> h = (ap_uint<4>)((hist[v] << 1) | ap_uint<1>(nh != hd[v]));
+                hist[v] = h;
+                const int pc = (int)h[0] + (int)h[1] + (int)h[2] + (int)h[3];
+                const int st = ((pc > 3 ? 3 : pc) * 2 + (nh ? 1 : 0)) * 2 + (t > RLBP_MEM_SPLIT ? 1 : 0);
+                const mem_t gm = MEM_TABLE[st];
+                lam[v] = llr_t((mem_t(1) - gm) * PRIOR[v] + gm * tv);
+            }
+#else
             llr_t tv = acc + PRIOR[v];
+#endif
 #if RLBP_POST_AVG == 2
             prev[v] = (t == 1) ? tv : tot[v];      // t = 1: no previous iteration, mean = current
 #endif

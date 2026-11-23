@@ -72,6 +72,9 @@ def main():
                     help="OSD input: 1 = final-iteration posterior, 2 = mean of the last two iterations")
     ap.add_argument("--source", choices=["device", "dem"], default="device",
                     help="where training episodes and test vectors come from")
+    ap.add_argument("--memory-table", default="",
+                    help="OAM-BP: JSON file with a 16-entry 'gamma' table (experiments/results/oam_gamma_*.json)")
+    ap.add_argument("--memory-split", type=int, default=8)
     ap.add_argument("--noise-scale", type=float, default=1.0,
                     help="multiply every DEM mechanism probability (--source dem only)")
     ap.add_argument("--train", type=int, default=8000, help="policy training episodes")
@@ -97,7 +100,12 @@ def main():
                                  np.clip(np.asarray(dem.probs) * a.noise_scale, 0.0, 0.499),
                                  list(dem.dets), list(dem.obs))
     g = TannerGraph(dem)
-    bp = MinSumBP(g, max_iter=a.max_iter, alpha=a.alpha, posterior_avg=a.posterior_avg)
+    mem = None
+    if a.memory_table:
+        import json
+        mem = np.asarray(json.loads(Path(a.memory_table).read_text())["gamma"], np.float32)
+    bp = MinSumBP(g, max_iter=a.max_iter, alpha=a.alpha, posterior_avg=a.posterior_avg,
+                  memory_table=mem, memory_split=a.memory_split)
     if g.num_observables > 32:
         raise SystemExit("kernel packs observables into 32 bits; this code has more")
     print(f"{a.code} r={a.rounds}: checks {g.num_checks}, vars {g.num_vars}, edges {g.num_edges}, "
@@ -160,6 +168,9 @@ def main():
          f"#define RLBP_MIN_ITER     {policy.min_iter}\n",
          f"#define RLBP_ALPHA        {f32(a.alpha)}\n",
          f"#define RLBP_POST_AVG     {a.posterior_avg}   // OSD input: 1 final posterior, 2 mean of last two\n",
+         (f"#define RLBP_MEM          1\n#define RLBP_MEM_SPLIT    {a.memory_split}\n"
+          f"#define RLBP_MEM_TABLE_INIT {{ {', '.join(f32(x) for x in mem)} }}\n" if mem is not None
+          else "#define RLBP_MEM          0\n"),
          f"#define RLBP_MAX_CHK_DEG  {int(deg_c.max())}\n",
          f"#define RLBP_MAX_VAR_DEG  {max(len(x) for x in var_edges)}\n",
          f"#define RLBP_NUM_STATES   {NUM_STATES}\n\n",

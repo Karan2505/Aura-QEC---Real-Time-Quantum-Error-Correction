@@ -54,6 +54,20 @@ typedef float llr_t;
 #define RLBP_POST_AVG 1
 #endif
 
+// Oscillation-aware memory (aura.decoding.MinSumBP memory_table, OAM-BP). RLBP_MEM = 1 when
+// the exported graph carries a 16-entry memory table: each variable's prior becomes
+//   lam_j(t) = (1 - g) PRIOR_j + g * tot_j(t-1),  g = MEM_TABLE[state_j],
+//   state = (min(flips in last 4 iterations, 3) * 2 + hard decision) * 2 + (t > RLBP_MEM_SPLIT).
+// Cost per variable: one LLR register, a 4-bit flip history, a 16-entry ROM lookup, 2 multiplies.
+#ifndef RLBP_MEM
+#define RLBP_MEM 0
+#endif
+#ifdef RLBP_FIXED
+typedef ap_fixed<12, 2, AP_TRN, AP_SAT> mem_t;   // memory strengths in [-0.25, 0.7], step 1/1024
+#else
+typedef float mem_t;
+#endif
+
 // exit reasons (same codes as aura.decoding.bp)
 enum {
     EXIT_TRIVIAL   = 0,   // empty syndrome

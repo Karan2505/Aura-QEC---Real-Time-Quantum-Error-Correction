@@ -36,6 +36,8 @@ import scipy.sparse as sp
 
 from ..host.compiler.dem import DetectorErrorModel
 
+_POP4 = np.array([bin(i).count("1") for i in range(16)], np.int64)    # popcount of a 4-bit flip history
+
 # per-shot termination reasons
 EXIT_TRIVIAL = 0        # empty syndrome, nothing to do
 EXIT_CONVERGED = 1      # BP hard decision explains the syndrome
@@ -146,7 +148,7 @@ class MinSumBP:
     """Normalised min-sum BP with convergence early exit and an optional halting policy."""
 
     def __init__(self, graph: TannerGraph, max_iter: int = 30, alpha: float = 0.75, damping: float = 0.0,
-                 chunk: int = 64, posterior_avg: int = 1):
+                 chunk: int = 64, posterior_avg: int = 1, memory_table=None, memory_split: int = 8):
         if max_iter < 1:
             raise ValueError("max_iter must be >= 1")
         if not 0.0 < alpha <= 1.0:
@@ -164,6 +166,16 @@ class MinSumBP:
         # last two (2), which cancels the period-2 oscillation BP shows on BB codes. At t = 1 the
         # mean falls back to the current posterior.
         self.posterior_avg = posterior_avg
+        # Oscillation-aware memory (OAM-BP): each variable's prior becomes
+        #   Lambda_j(t) = (1 - g) Lambda_j(0) + g M_j(t-1),  g = memory_table[state_j(t)],
+        # state = (min(flips in the last 4 iterations, 3) * 2 + hard decision) * 2 + (t > memory_split).
+        # None = plain BP (default); a constant table = memory BP with one global strength.
+        if memory_table is not None:
+            memory_table = np.asarray(memory_table, np.float32)
+            if memory_table.shape != (16,):
+                raise ValueError("memory_table must have 16 entries")
+        self.memory_table = memory_table
+        self.memory_split = memory_split
         self._ws = _Workspace()
 
     def decode(self, syndromes: np.ndarray, policy: Optional[HaltingPolicy] = None,
@@ -215,6 +227,10 @@ class MinSumBP:
         alive = np.arange(A)                     # positions (into idx) still iterating
         prev = None                              # previous iteration's posterior (posterior_avg == 2)
         avg = self.posterior_avg == 2
+        mem = self.memory_table
+        if mem is not None:
+            lam = np.repeat(prior_col, A, axis=1).astype(np.float32)            # memory-mixed prior (V, A)
+            hist = np.zeros((V, A), np.uint8)                                   # 4-bit flip history
         for t in range(1, self.max_iter + 1):
             n = len(alive)
             # ---- check-node update (normalised min-sum, min1/min2 trick) ----
@@ -244,11 +260,17 @@ class MinSumBP:
             m_cv = new_cv
             # ---- variable-node update ----
             tot = g.var_sum @ m_cv                                 # (V, n)
-            tot += prior_col
+            tot += prior_col if mem is None else lam
             m_vc = np.take(tot, e_var, axis=0, mode="clip", out=ws.get("mvc", E, n, np.float32))
             m_vc -= m_cv
             new_hard = np.less(tot, 0, out=ws.get(f"hard{t & 1}", V, n, bool))
-            flips = np.not_equal(new_hard, hard, out=ws.get("flips", V, n, bool)).sum(axis=0, dtype=np.int32)
+            flipv = np.not_equal(new_hard, hard, out=ws.get("flips", V, n, bool))
+            flips = flipv.sum(axis=0, dtype=np.int32)
+            if mem is not None:
+                hist = ((hist << 1) | flipv) & np.uint8(15)
+                state = (np.minimum(_POP4[hist], 3) * 2 + new_hard) * 2 + (1 if t > self.memory_split else 0)
+                gam = mem[state]
+                lam = (1 - gam) * prior_col + gam * tot
             hard = new_hard
             # ---- syndrome check ----
             syn = (g.h_active @ hard.view(np.uint8).astype(np.float32)).astype(np.uint8)
@@ -285,6 +307,8 @@ class MinSumBP:
                 # compact the state into fresh arrays (they must not alias workspace buffers)
                 s, m_vc, m_cv, hard = s[:, keep], m_vc[:, keep], m_cv[:, keep], hard[:, keep]
                 unsat, best, stall = unsat[keep], best[keep], stall[keep]
+                if mem is not None:
+                    lam, hist = lam[:, keep], hist[:, keep]
                 if avg:
                     tot = tot[:, keep]
             if avg:
