@@ -31,11 +31,12 @@ from aura.decoding import MinSumBP, TannerGraph, osd0
 
 class RelayBP:
     def __init__(self, g: TannerGraph, alpha=1.0, g0=0.125, g_lo=-0.24, g_hi=0.66, t0=80, tr=60, legs=50,
-                 solutions=5, seed=0):
+                 solutions=5, seed=0, budget=0):
         self.g, self.alpha = g, np.float32(alpha)
         self.g0, self.g_lo, self.g_hi = g0, g_lo, g_hi
         self.t0, self.tr, self.legs, self.S = t0, tr, legs, solutions
         self.rng = np.random.default_rng(seed)
+        self.budget = budget                  # total iteration cap per shot (0 = none): bounded latency
 
     def _check_update(self, m_vc, s):
         g = self.g
@@ -111,11 +112,12 @@ class RelayBP:
                     best_pred[p] = g.logical(hard[:, j][None, :].astype(np.uint8))[0]
                 nsol[p] += 1
             limit = np.where(leg[a] == 0, self.t0, self.tr)
-            leg_end = ok | (t_leg[a] >= limit)
+            over = (iters[idx[a]] >= self.budget) if self.budget else np.zeros(len(a), bool)
+            leg_end = ok | (t_leg[a] >= limit) | over
             if not leg_end.any():
                 continue
             ends = a[leg_end]
-            finished = ends[(nsol[ends] >= self.S) | (leg[ends] + 1 >= self.legs)]
+            finished = ends[(nsol[ends] >= self.S) | (leg[ends] + 1 >= self.legs) | over[leg_end]]
             alive[finished] = False
             restart = np.setdiff1d(ends, finished)
             if len(restart):
@@ -147,6 +149,9 @@ def main():
     ap.add_argument("--t0", type=int, default=80)
     ap.add_argument("--tr", type=int, default=60)
     ap.add_argument("--alpha", type=float, default=1.0)
+    ap.add_argument("--budget", type=int, default=0, help="total iteration cap per shot (0 = none)")
+    ap.add_argument("--no-baseline", action="store_true", help="skip the BP+OSD rows")
+    ap.add_argument("--overwrite", action="store_true", help="replace --out instead of appending")
     ap.add_argument("--seed", type=int, default=3)
     ap.add_argument("--out", default=str(HERE / "results" / "relay_bp.csv"))
     a = ap.parse_args()
@@ -157,7 +162,7 @@ def main():
         g = TannerGraph(scaled(dem, lam))
         _, s, o = g.sample(a.shots, np.random.default_rng([a.seed, int(lam * 1000)]))   # same shots as osd_input.py
         res = {}
-        for avg in (1, 2):
+        for avg in (() if a.no_baseline else (1, 2)):
             t0 = time.perf_counter()
             r = MinSumBP(g, max_iter=30, posterior_avg=avg).decode(s)
             p = g.logical(r.errors)
@@ -165,26 +170,33 @@ def main():
                 p[i], _, _ = osd0(g, s[i], r.posterior[i])
             res[f"bposd_avg{avg}"] = (p, r.iterations.astype(np.int64), time.perf_counter() - t0, None)
         t0 = time.perf_counter()
-        rb = RelayBP(g, alpha=a.alpha, t0=a.t0, tr=a.tr, legs=a.legs, solutions=a.solutions, seed=a.seed)
+        rb = RelayBP(g, alpha=a.alpha, t0=a.t0, tr=a.tr, legs=a.legs, solutions=a.solutions, seed=a.seed,
+                     budget=a.budget)
         p, ok, it, legs = rb.decode(s)
-        res[f"relay{a.solutions}"] = (p, it, time.perf_counter() - t0, (ok, legs))
+        name = f"relay{a.solutions}_t{a.t0}-{a.tr}_b{a.budget or 'inf'}"
+        res[name] = (p, it, time.perf_counter() - t0, (ok, legs))
         for name, (p, it, wall, extra) in res.items():
+            cfg = {"solutions": a.solutions, "t0": a.t0, "tr": a.tr, "budget": a.budget} if extra else {}
             wrong = int((p != o).any(axis=1).sum())
             lo, hi = wilson(wrong, a.shots)
             row = {"code": a.code, "rounds": rounds, "scale": lam, "decoder": name, "shots": a.shots,
                    "errors": wrong, "ler": wrong / a.shots, "ci_lo": lo, "ci_hi": hi,
                    "mean_iter": float(it.mean()), "p99_iter": float(np.percentile(it, 99)),
                    "max_iter": int(it.max()), "unsolved": float((~extra[0]).mean()) if extra else 0.0,
-                   "mean_legs": float(extra[1].mean()) if extra else 1.0, "wall_s": wall}
+                   "mean_legs": float(extra[1].mean()) if extra else 1.0, "wall_s": wall,
+                   "solutions": cfg.get("solutions", ""), "t0": cfg.get("t0", ""), "tr": cfg.get("tr", ""),
+                   "budget": cfg.get("budget", "")}
             rows.append(row)
-            print(f"lambda={lam:<4g} {name:<11} LER {row['ler']:.2e} [{lo:.2e},{hi:.2e}]  iters mean "
+            print(f"lambda={lam:<4g} {name:<24} LER {row['ler']:.2e} [{lo:.2e},{hi:.2e}]  iters mean "
                   f"{row['mean_iter']:.1f} p99 {row['p99_iter']:.0f} max {row['max_iter']}"
                   f"  unsolved {row['unsolved']:.3f}  ({wall:.0f} s)", flush=True)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", newline="") as fh:
+    new = not out.exists() or a.overwrite
+    with out.open("w" if new else "a", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
-        w.writeheader()
+        if new:
+            w.writeheader()
         w.writerows(rows)
     print(f"wrote {out}")
 
