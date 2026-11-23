@@ -67,6 +67,7 @@ class RelayBP:
         solved = np.zeros(B, bool)
         iters = np.zeros(B, np.int64)
         legs_used = np.zeros(B, np.int64)
+        self.post = np.zeros((B, V), np.float32)      # mean of the last two marginals (unsolved shots)
         w0 = syndromes.any(axis=1)
         solved[~w0] = True
         idx = np.nonzero(w0)[0]
@@ -88,6 +89,8 @@ class RelayBP:
         best_w = np.full(A, np.inf)
         best_pred = np.zeros((A, g.num_observables), np.uint8)
         last_hard = np.zeros((V, A), bool)
+        prev_m = np.zeros((V, A), np.float32)
+        cur_m = np.zeros((V, A), np.float32)
         alive = np.ones(A, bool)
         lam0c = lam0[:, None]
         while alive.any():
@@ -97,6 +100,8 @@ class RelayBP:
             m_vc[:, a] = M[g.e_var] - m_cv
             hard = M < 0
             last_hard[:, a] = hard
+            prev_m[:, a] = np.where(t_leg[a] + (leg[a] > 0) > 0, cur_m[:, a], M)   # first iteration: no previous
+            cur_m[:, a] = M
             synd = (g.h_active @ hard.view(np.uint8).astype(np.float32)).astype(np.uint8) & 1
             ok = (synd == s[:, a]).all(axis=0)
             t_leg[a] += 1
@@ -134,6 +139,7 @@ class RelayBP:
         pred[rows[found]] = best_pred[found]
         if (~found).any():
             pred[rows[~found]] = g.logical(last_hard[:, ~found].T.astype(np.uint8))
+            self.post[rows[~found]] = ((prev_m[:, ~found] + cur_m[:, ~found]) * np.float32(0.5)).T
         solved[rows] = found
         legs_used[rows] = leg + 1
 
@@ -152,6 +158,8 @@ def main():
     ap.add_argument("--budget", type=int, default=0, help="total iteration cap per shot (0 = none)")
     ap.add_argument("--no-baseline", action="store_true", help="skip the BP+OSD rows")
     ap.add_argument("--overwrite", action="store_true", help="replace --out instead of appending")
+    ap.add_argument("--osd-fallback", action="store_true",
+                    help="hybrid: OSD-0 on the mean of the last two marginals for shots Relay-BP did not solve")
     ap.add_argument("--seed", type=int, default=3)
     ap.add_argument("--out", default=str(HERE / "results" / "relay_bp.csv"))
     a = ap.parse_args()
@@ -166,16 +174,25 @@ def main():
             t0 = time.perf_counter()
             r = MinSumBP(g, max_iter=30, posterior_avg=avg).decode(s)
             p = g.logical(r.errors)
-            for i in np.nonzero(~r.converged)[0]:
-                p[i], _, _ = osd0(g, s[i], r.posterior[i])
-            res[f"bposd_avg{avg}"] = (p, r.iterations.astype(np.int64), time.perf_counter() - t0, None)
+            fb = np.nonzero(~r.converged)[0]
+            cols = np.zeros(len(fb), np.int64)
+            for n, i in enumerate(fb):
+                p[i], cols[n], _ = osd0(g, s[i], r.posterior[i])
+            res[f"bposd_avg{avg}"] = (p, r.iterations.astype(np.int64), time.perf_counter() - t0, None, cols)
         t0 = time.perf_counter()
         rb = RelayBP(g, alpha=a.alpha, t0=a.t0, tr=a.tr, legs=a.legs, solutions=a.solutions, seed=a.seed,
                      budget=a.budget)
         p, ok, it, legs = rb.decode(s)
         name = f"relay{a.solutions}_t{a.t0}-{a.tr}_b{a.budget or 'inf'}"
-        res[name] = (p, it, time.perf_counter() - t0, (ok, legs))
-        for name, (p, it, wall, extra) in res.items():
+        cols = np.zeros(0, np.int64)
+        if a.osd_fallback:
+            name += "+osd"
+            fb = np.nonzero(~ok)[0]
+            cols = np.zeros(len(fb), np.int64)
+            for n, i in enumerate(fb):
+                p[i], cols[n], _ = osd0(g, s[i], rb.post[i])
+        res[name] = (p, it, time.perf_counter() - t0, (ok, legs), cols)
+        for name, (p, it, wall, extra, cols) in res.items():
             cfg = {"solutions": a.solutions, "t0": a.t0, "tr": a.tr, "budget": a.budget} if extra else {}
             wrong = int((p != o).any(axis=1).sum())
             lo, hi = wilson(wrong, a.shots)
@@ -185,11 +202,15 @@ def main():
                    "max_iter": int(it.max()), "unsolved": float((~extra[0]).mean()) if extra else 0.0,
                    "mean_legs": float(extra[1].mean()) if extra else 1.0, "wall_s": wall,
                    "solutions": cfg.get("solutions", ""), "t0": cfg.get("t0", ""), "tr": cfg.get("tr", ""),
-                   "budget": cfg.get("budget", "")}
+                   "budget": cfg.get("budget", ""), "osd_rate": len(cols) / a.shots,
+                   "osd_cols_mean": float(cols.mean()) if len(cols) else 0.0,
+                   "osd_cols_p99": float(np.percentile(cols, 99)) if len(cols) else 0.0,
+                   "osd_cols_max": int(cols.max()) if len(cols) else 0}
             rows.append(row)
             print(f"lambda={lam:<4g} {name:<24} LER {row['ler']:.2e} [{lo:.2e},{hi:.2e}]  iters mean "
                   f"{row['mean_iter']:.1f} p99 {row['p99_iter']:.0f} max {row['max_iter']}"
-                  f"  unsolved {row['unsolved']:.3f}  ({wall:.0f} s)", flush=True)
+                  f"  unsolved {row['unsolved']:.3f}  osd {row['osd_rate']:.3f} cols p99 {row['osd_cols_p99']:.0f}"
+                  f" max {row['osd_cols_max']}  ({wall:.0f} s)", flush=True)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     new = not out.exists() or a.overwrite
