@@ -11,6 +11,7 @@
 #define RLBP_MAX_ITER     30
 #define RLBP_MIN_ITER     1
 #define RLBP_ALPHA        0.75f
+#define RLBP_POST_AVG     2   // OSD input: 1 final posterior, 2 mean of last two
 #define RLBP_MAX_CHK_DEG  8
 #define RLBP_MAX_VAR_DEG  2
 #define RLBP_NUM_STATES   1320

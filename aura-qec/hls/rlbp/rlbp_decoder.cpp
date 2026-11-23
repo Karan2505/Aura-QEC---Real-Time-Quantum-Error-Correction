@@ -40,6 +40,19 @@ static llr_t llr_abs(llr_t x) {
     return x < 0 ? llr_t(-x) : x;
 }
 
+// mean of two LLRs; float: same operation order as numpy ((a + b) * 0.5f, bit-exact);
+// fixed: one extra bit so the sum cannot saturate before halving
+static llr_t llr_avg(llr_t a, llr_t b) {
+#pragma HLS INLINE
+#ifdef RLBP_FIXED
+    ap_fixed<RLBP_LLR_W + 1, RLBP_LLR_I + 1, RLBP_LLR_Q, AP_SAT> s = a;
+    s += b;
+    return llr_t(s >> 1);
+#else
+    return (a + b) * 0.5f;
+#endif
+}
+
 // ---- BP iterations with early exit and RL halting (runs only for a non-empty,
 // explainable syndrome). Returns the exit reason; *t_exit = iterations spent.
 static unsigned char bp_iterate(const bool s[RLBP_NUM_CHECKS], int w0,
@@ -48,6 +61,10 @@ static unsigned char bp_iterate(const bool s[RLBP_NUM_CHECKS], int w0,
     llr_t m_cv[RLBP_NUM_EDGES];      // check -> variable messages
 #pragma HLS ARRAY_PARTITION variable = m_vc complete
 #pragma HLS ARRAY_PARTITION variable = m_cv complete
+#if RLBP_POST_AVG == 2
+    llr_t prev[RLBP_NUM_VARS];       // previous iteration's posterior
+#pragma HLS ARRAY_PARTITION variable = prev complete
+#endif
     const llr_t alpha = RLBP_ALPHA;
     int best = w0, stall = 0;
     unsigned char reason = EXIT_MAX_ITER;
@@ -106,6 +123,9 @@ ITER:
                 if (p0 + d < p1) acc += m_cv[VAR_EDGE[p0 + d]];
             }
             llr_t tv = acc + PRIOR[v];
+#if RLBP_POST_AVG == 2
+            prev[v] = (t == 1) ? tv : tot[v];      // t = 1: no previous iteration, mean = current
+#endif
             tot[v] = tv;
             hd[v] = tv < 0;
         VAR_OUT:
@@ -141,6 +161,13 @@ ITER:
             break;
         }
     }
+#if RLBP_POST_AVG == 2
+POST_AVG:
+    for (int v = 0; v < RLBP_NUM_VARS; v++) {
+#pragma HLS UNROLL
+        tot[v] = llr_avg(prev[v], tot[v]);
+    }
+#endif
     return reason;
 }
 
@@ -165,9 +192,9 @@ static syn_t var_col(int v) {
 }
 
 static unsigned int osd0(syn_t syn, const llr_t post[RLBP_NUM_VARS]) {
-    unsigned char rank[RLBP_NUM_VARS];
+    unsigned short rank[RLBP_NUM_VARS];        // 16 bits: graphs have more than 255 variables
 #pragma HLS ARRAY_PARTITION variable = rank complete
-    unsigned char order[RLBP_NUM_VARS];        // order[r] = variable of rank r (small RAM)
+    unsigned short order[RLBP_NUM_VARS];         // order[r] = variable of rank r (small RAM)
 OSD_RANK0:
     for (int v = 0; v < RLBP_NUM_VARS; v++) {
 #pragma HLS UNROLL
@@ -185,7 +212,7 @@ OSD_RANK:
 OSD_PERM:
     for (int v = 0; v < RLBP_NUM_VARS; v++) {
 #pragma HLS PIPELINE II = 1
-        order[rank[v]] = (unsigned char)v;
+        order[rank[v]] = (unsigned short)v;
     }
 
     syn_t piv[RLBP_NUM_CHECKS];                // pivot vectors, indexed by their top bit

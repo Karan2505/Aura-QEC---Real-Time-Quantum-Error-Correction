@@ -132,6 +132,24 @@ Notes:
   ran out of memory (`bad allocation`) on a 7 GB-RAM PC. Set `RLBP_IMPL_REPORTS=2` on a bigger
   machine to get the full report set.
 
+### Averaged OSD input (`RLBP_POST_AVG=2`, default)
+
+OSD-0 is fed the mean of the last two BP posteriors instead of the final one. BP oscillates with
+period 2 on BB codes, and averaging cancels that.
+
+* **Accuracy:** on BB-72 it lowers the LER 39–51% (1.66e-2 → 8.1e-3 at λ=0.5, 1.29e-1 → 8.0e-2 at
+  λ=1). On surface codes the predictions are unchanged (see `experiments/osd_input.py`).
+* **Cost on surface-3, post-route:** +474 LUT (+4.2%), +579 FF, +1 cycle worst case, timing unchanged
+  (3.213 ns).
+* **Verification:** bit-exact against the Python model in float, on surface-3 and on surface-5 at 3×
+  noise. On that surface-5 run, 17 of the 3000 shots change prediction between the two settings, so
+  the averaging path is actually exercised.
+* **Export:** `export_hls.py --posterior-avg 1|2` (default 2). `--noise-scale` scales the DEM when
+  `--source dem` is used.
+
+The on-chip OSD stores variable ranks and indices in 16 bits, so graphs with more than 255
+variables (surface-5 and BB codes) are supported.
+
 ## Next steps
 
 1. Surface-5 is about 5x larger. If it does not fit fully parallel, use partial unrolling

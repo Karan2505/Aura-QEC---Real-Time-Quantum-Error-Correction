@@ -146,18 +146,24 @@ class MinSumBP:
     """Normalised min-sum BP with convergence early exit and an optional halting policy."""
 
     def __init__(self, graph: TannerGraph, max_iter: int = 30, alpha: float = 0.75, damping: float = 0.0,
-                 chunk: int = 64):
+                 chunk: int = 64, posterior_avg: int = 1):
         if max_iter < 1:
             raise ValueError("max_iter must be >= 1")
         if not 0.0 < alpha <= 1.0:
             raise ValueError("alpha must be in (0, 1]")
         if not 0.0 <= damping < 1.0:
             raise ValueError("damping must be in [0, 1)")
+        if posterior_avg not in (1, 2):
+            raise ValueError("posterior_avg must be 1 (final iteration) or 2 (mean of the last two)")
         self.g = graph
         self.max_iter = max_iter
         self.alpha = np.float32(alpha)
         self.damping = np.float32(damping)
         self.chunk = chunk
+        # Posterior reported at exit (the OSD input): the last iteration's (1), or the mean of the
+        # last two (2), which cancels the period-2 oscillation BP shows on BB codes. At t = 1 the
+        # mean falls back to the current posterior.
+        self.posterior_avg = posterior_avg
         self._ws = _Workspace()
 
     def decode(self, syndromes: np.ndarray, policy: Optional[HaltingPolicy] = None,
@@ -207,6 +213,8 @@ class MinSumBP:
         best = unsat0.copy()
         stall = np.zeros(A, np.int32)
         alive = np.arange(A)                     # positions (into idx) still iterating
+        prev = None                              # previous iteration's posterior (posterior_avg == 2)
+        avg = self.posterior_avg == 2
         for t in range(1, self.max_iter + 1):
             n = len(alive)
             # ---- check-node update (normalised min-sum, min1/min2 trick) ----
@@ -262,7 +270,10 @@ class MinSumBP:
             if leaving.any():
                 rows = idx[alive[leaving]]
                 res.errors[rows] = hard[:, leaving].T
-                res.posterior[rows] = tot[:, leaving].T
+                if avg and prev is not None:
+                    res.posterior[rows] = ((prev[:, leaving] + tot[:, leaving]) * np.float32(0.5)).T
+                else:
+                    res.posterior[rows] = tot[:, leaving].T
                 res.iterations[rows] = t
                 res.converged[rows] = done[leaving]
                 res.exit_reason[rows] = np.where(done[leaving], EXIT_CONVERGED,
@@ -274,4 +285,8 @@ class MinSumBP:
                 # compact the state into fresh arrays (they must not alias workspace buffers)
                 s, m_vc, m_cv, hard = s[:, keep], m_vc[:, keep], m_cv[:, keep], hard[:, keep]
                 unsat, best, stall = unsat[keep], best[keep], stall[keep]
+                if avg:
+                    tot = tot[:, keep]
+            if avg:
+                prev = tot
             unsat_prev = unsat

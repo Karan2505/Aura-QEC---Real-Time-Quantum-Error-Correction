@@ -47,6 +47,13 @@ typedef float llr_t;
 #define RLBP_LLR_INF __builtin_huge_valf()
 #endif
 
+// OSD input (aura.decoding.MinSumBP posterior_avg): 1 = posterior of the last BP
+// iteration, 2 = mean of the last two iterations (cancels the period-2 oscillation
+// of BP on BB codes; costs one extra LLR register per variable).
+#ifndef RLBP_POST_AVG
+#define RLBP_POST_AVG 1
+#endif
+
 // exit reasons (same codes as aura.decoding.bp)
 enum {
     EXIT_TRIVIAL   = 0,   // empty syndrome

@@ -77,6 +77,31 @@ def test_bp_iteration_budget_and_halting_hook(s5):
     assert res2.iterations.max() == 7 and (res2.exit_reason == EXIT_MAX_ITER).any()
 
 
+def test_posterior_avg_reports_mean_of_last_two_iterations(s5):
+    g, _, _ = s5
+    _, s, _ = g.sample(400, np.random.default_rng(5), scale=3.0)
+    hist = {}
+
+    def observer(f, done, halted, tot):
+        for j, shot in enumerate(f.shot_index.tolist()):
+            hist.setdefault(shot, []).append(tot[:, j].copy())
+
+    res1 = MinSumBP(g, max_iter=9).decode(s)
+    res2 = MinSumBP(g, max_iter=9, posterior_avg=2).decode(s, observer=observer)
+    # BP itself is unchanged: same decisions, iterations and exits
+    assert (res1.errors == res2.errors).all() and (res1.iterations == res2.iterations).all()
+    assert (res1.exit_reason == res2.exit_reason).all()
+    checked = 0
+    for shot, posts in hist.items():
+        want = posts[-1] if len(posts) == 1 else (posts[-2] + posts[-1]) * np.float32(0.5)
+        assert np.array_equal(res2.posterior[shot], want)
+        assert np.array_equal(res1.posterior[shot], posts[-1])
+        checked += len(posts) > 1
+    assert checked > 20                           # many shots ran several iterations
+    with pytest.raises(ValueError):
+        MinSumBP(g, posterior_avg=3)
+
+
 def test_osd0_solves_every_explainable_syndrome(s5):
     g, _, _ = s5
     rng = np.random.default_rng(4)
