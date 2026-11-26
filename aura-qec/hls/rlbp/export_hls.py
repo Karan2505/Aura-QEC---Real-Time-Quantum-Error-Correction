@@ -75,6 +75,9 @@ def main():
     ap.add_argument("--memory-table", default="",
                     help="OAM-BP: JSON file with a 16-entry 'gamma' table (experiments/results/oam_gamma_*.json)")
     ap.add_argument("--memory-split", type=int, default=8)
+    ap.add_argument("--memory-table2", default="",
+                    help="OAM pair: JSON with a 48-entry check-aware table ('tables'[0] or 'gamma'); a second "
+                         "core runs it in lockstep and the lower-weight converged solution is output")
     ap.add_argument("--noise-scale", type=float, default=1.0,
                     help="multiply every DEM mechanism probability (--source dem only)")
     ap.add_argument("--train", type=int, default=8000, help="policy training episodes")
@@ -106,6 +109,17 @@ def main():
         mem = np.asarray(json.loads(Path(a.memory_table).read_text())["gamma"], np.float32)
     bp = MinSumBP(g, max_iter=a.max_iter, alpha=a.alpha, posterior_avg=a.posterior_avg,
                   memory_table=mem, memory_split=a.memory_split)
+    mem2 = bp2 = None
+    if a.memory_table2:
+        import json
+        if mem is None:
+            raise SystemExit("--memory-table2 needs --memory-table (core 0)")
+        j = json.loads(Path(a.memory_table2).read_text())
+        mem2 = np.asarray(j["tables"][0] if "tables" in j else j["gamma"], np.float32)
+        if mem2.shape != (48,):
+            raise SystemExit("--memory-table2 must hold a 48-entry check-aware table")
+        bp2 = MinSumBP(g, max_iter=a.max_iter, alpha=a.alpha, posterior_avg=a.posterior_avg,
+                       memory_table=mem2, memory_split=a.memory_split)
     if g.num_observables > 32:
         raise SystemExit("kernel packs observables into 32 bits; this code has more")
     print(f"{a.code} r={a.rounds}: checks {g.num_checks}, vars {g.num_vars}, edges {g.num_edges}, "
@@ -135,10 +149,26 @@ def main():
     res = bp.decode(ts, policy=policy)
     pred, fb = finish_with_fallback(g, ts, res)
     bp_obs = g.logical(res.errors)
-    wrong = (pred != to).any(axis=1)
+    exit_ = res.exit_reason.copy()
     it = res.iterations
+    if bp2 is not None:                                 # OAM pair, as the kernel's bp_iterate_pair
+        rb = bp2.decode(ts, policy=policy)
+        ca = np.isin(res.exit_reason, (EXIT_TRIVIAL, EXIT_CONVERGED))
+        cb = np.isin(rb.exit_reason, (EXIT_TRIVIAL, EXIT_CONVERGED))
+        pr = g.prior_llr.astype(np.float32)
+        wa = res.errors.astype(np.float32) @ pr
+        wb = rb.errors.astype(np.float32) @ pr
+        pick = cb & (~ca | (wb < wa))
+        bp_obs = np.where(pick[:, None], g.logical(rb.errors), bp_obs)
+        pred = np.where(pick[:, None], bp_obs, pred)    # not picked: core 0's answer (its OSD-0 if it failed)
+        exit_ = np.where(pick, rb.exit_reason, exit_)
+        fb = ~(ca | cb)
+        it = np.maximum(res.iterations, rb.iterations)
+        print(f"pair: core 1 chosen on {int((pick & ~ca).sum())} shots core 0 did not solve, "
+              f"{int((pick & ca).sum())} by lower weight")
+    wrong = (pred != to).any(axis=1)
     print(f"golden: LER {wrong.mean():.4f}  mean iters {it.mean():.2f}  p99 {np.percentile(it, 99):.0f}  "
-          f"fallback {fb.mean():.3f}  halted {(res.exit_reason == EXIT_HALTED).mean():.3f}")
+          f"fallback {fb.mean():.3f}  halted {(exit_ == EXIT_HALTED).mean():.3f}")
 
     # ---- header
     deg_c = np.bincount(g.e_chk, minlength=g.num_checks)
@@ -171,6 +201,8 @@ def main():
          (f"#define RLBP_MEM          1\n#define RLBP_MEM_SPLIT    {a.memory_split}\n"
           f"#define RLBP_MEM_TABLE_INIT {{ {', '.join(f32(x) for x in mem)} }}\n" if mem is not None
           else "#define RLBP_MEM          0\n"),
+         (f"#define RLBP_PAIR         1\n#define RLBP_MEM2_TABLE_INIT {{ {', '.join(f32(x) for x in mem2)} }}\n"
+          if mem2 is not None else ""),
          f"#define RLBP_MAX_CHK_DEG  {int(deg_c.max())}\n",
          f"#define RLBP_MAX_VAR_DEG  {max(len(x) for x in var_edges)}\n",
          f"#define RLBP_NUM_STATES   {NUM_STATES}\n\n",
@@ -201,7 +233,7 @@ def main():
     lines = [f"# shots checks observables -- then per shot: syndrome true_obs exit iters bp_obs final_obs",
              f"{len(ts)} {g.num_checks} {g.num_observables}"]
     for i in range(len(ts)):
-        lines.append(f"{bits(ts[i])} {bits(to[i])} {int(res.exit_reason[i])} {int(it[i])} "
+        lines.append(f"{bits(ts[i])} {bits(to[i])} {int(exit_[i])} {int(it[i])} "
                      f"{bits(bp_obs[i])} {bits(pred[i])}")
     (out / "vectors.txt").write_text("\n".join(lines) + "\n")
     policy.save(out / "policy.json")

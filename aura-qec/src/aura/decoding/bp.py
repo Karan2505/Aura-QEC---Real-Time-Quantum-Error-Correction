@@ -170,10 +170,12 @@ class MinSumBP:
         #   Lambda_j(t) = (1 - g) Lambda_j(0) + g M_j(t-1),  g = memory_table[state_j(t)],
         # state = (min(flips in the last 4 iterations, 3) * 2 + hard decision) * 2 + (t > memory_split).
         # None = plain BP (default); a constant table = memory BP with one global strength.
+        # A 48-entry table is check-aware: state' = 3 * state + min(unsatisfied checks next to the
+        # variable after this iteration, 2), so the prior update follows the syndrome check.
         if memory_table is not None:
             memory_table = np.asarray(memory_table, np.float32)
-            if memory_table.shape != (16,):
-                raise ValueError("memory_table must have 16 entries")
+            if memory_table.shape not in ((16,), (48,)):
+                raise ValueError("memory_table must have 16 or 48 entries")
         self.memory_table = memory_table
         self.memory_split = memory_split
         self._ws = _Workspace()
@@ -269,13 +271,19 @@ class MinSumBP:
             if mem is not None:
                 hist = ((hist << 1) | flipv) & np.uint8(15)
                 state = (np.minimum(_POP4[hist], 3) * 2 + new_hard) * 2 + (1 if t > self.memory_split else 0)
-                gam = mem[state]
-                lam = (1 - gam) * prior_col + gam * tot
+                if len(mem) == 16:
+                    gam = mem[state]
+                    lam = (1 - gam) * prior_col + gam * tot
             hard = new_hard
             # ---- syndrome check ----
             syn = (g.h_active @ hard.view(np.uint8).astype(np.float32)).astype(np.uint8)
             syn &= 1
-            unsat = np.not_equal(syn, s).sum(axis=0, dtype=np.int32)
+            unsat_c = np.not_equal(syn, s)
+            unsat = unsat_c.sum(axis=0, dtype=np.int32)
+            if mem is not None and len(mem) == 48:
+                ucnt = np.asarray(g.h_active.T @ unsat_c.astype(np.float32)).astype(np.int64)
+                gam = mem[state * 3 + np.minimum(ucnt, 2)]
+                lam = (1 - gam) * prior_col + gam * tot
             improved = unsat < best
             best = np.minimum(best, unsat)
             stall = np.where(improved, 0, stall + 1)

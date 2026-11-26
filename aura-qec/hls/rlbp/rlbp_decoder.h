@@ -62,6 +62,11 @@ typedef float llr_t;
 #ifndef RLBP_MEM
 #define RLBP_MEM 0
 #endif
+// OAM pair (RLBP_PAIR = 1, needs RLBP_MEM = 1): a second core with the check-aware 48-entry
+// table RLBP_MEM2_TABLE_INIT runs in lockstep; the lower-weight converged solution is output.
+#ifndef RLBP_PAIR
+#define RLBP_PAIR 0
+#endif
 #ifdef RLBP_FIXED
 typedef ap_fixed<12, 2, AP_TRN, AP_SAT> mem_t;   // memory strengths in [-0.25, 0.7], step 1/1024
 #else

@@ -116,6 +116,19 @@ def test_memory_table_zero_is_plain_bp_and_nonzero_changes_decoding(s5):
         MinSumBP(g, memory_table=np.zeros(8))
 
 
+def test_check_aware_table_reduces_to_16_state_and_acts(s5):
+    g, _, _ = s5
+    _, s, _ = g.sample(400, np.random.default_rng(8), scale=3.0)
+    t16 = np.linspace(0.05, 0.4, 16).astype(np.float32)
+    a = MinSumBP(g, max_iter=20, alpha=1.0, memory_table=t16).decode(s)
+    b = MinSumBP(g, max_iter=20, alpha=1.0, memory_table=np.repeat(t16, 3)).decode(s)
+    assert (a.errors == b.errors).all() and (a.iterations == b.iterations).all()
+    assert np.array_equal(a.posterior, b.posterior)
+    t48 = np.repeat(t16, 3) * np.tile(np.float32([0.2, 1.0, 2.0]), 16)   # depends on the unsat count
+    c = MinSumBP(g, max_iter=20, alpha=1.0, memory_table=t48).decode(s)
+    assert (c.iterations != a.iterations).any()
+
+
 def test_osd0_solves_every_explainable_syndrome(s5):
     g, _, _ = s5
     rng = np.random.default_rng(4)

@@ -37,6 +37,9 @@ static const llr_t PRIOR[RLBP_NUM_VARS] = RLBP_PRIOR_INIT;
 #if RLBP_MEM
 static const mem_t MEM_TABLE[16] = RLBP_MEM_TABLE_INIT;
 #endif
+#if RLBP_PAIR
+static const mem_t MEM_TABLE2[48] = RLBP_MEM2_TABLE_INIT;
+#endif
 
 static llr_t llr_abs(llr_t x) {
 #pragma HLS INLINE
@@ -208,6 +211,203 @@ POST_AVG:
     return reason;
 }
 
+#if RLBP_PAIR
+// ---- OAM pair: two OAM-BP cores in lockstep on the same syndrome -------------
+// Core 0 uses the 16-state table; core 1 the check-aware 48-state table
+// (state' = 3 * state + min(unsatisfied checks next to the variable, 2), so its prior
+// update follows the syndrome check). Each core stops on its own (converged / RL halt /
+// budget) and then holds its state; the loop ends when both have stopped, so the latency
+// is that of the slower core. Output: the converged solution of lower prior-LLR weight
+// (ties: core 0); if neither converged, core 0's last hard decision and its averaged
+// posterior for OSD-0. Golden model: export_hls.py --memory-table2.
+static unsigned char bp_iterate_pair(const bool s[RLBP_NUM_CHECKS], int w0,
+                                     llr_t tot[RLBP_NUM_VARS], bool hd[RLBP_NUM_VARS], int *t_exit) {
+    llr_t m_vc[2][RLBP_NUM_EDGES], m_cv[2][RLBP_NUM_EDGES];
+    llr_t lam[2][RLBP_NUM_VARS], tt[2][RLBP_NUM_VARS], prev[2][RLBP_NUM_VARS];
+    ap_uint<4> hist[2][RLBP_NUM_VARS];
+    bool hprev[2][RLBP_NUM_VARS], h[2][RLBP_NUM_VARS];
+    ap_uint<4> st1[RLBP_NUM_VARS];       // core 1: 16-state part of the state, completed after the syndrome check
+#pragma HLS ARRAY_PARTITION variable = m_vc complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = m_cv complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = lam complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = tt complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = prev complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = hist complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = hprev complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = h complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = st1 complete
+    const llr_t alpha = RLBP_ALPHA;
+    int best[2] = {w0, w0}, stall[2] = {0, 0}, tex[2] = {RLBP_MAX_ITER, RLBP_MAX_ITER};
+    bool fin[2] = {false, false};
+    unsigned char rsn[2] = {EXIT_MAX_ITER, EXIT_MAX_ITER};
+#pragma HLS ARRAY_PARTITION variable = best complete
+#pragma HLS ARRAY_PARTITION variable = stall complete
+#pragma HLS ARRAY_PARTITION variable = tex complete
+#pragma HLS ARRAY_PARTITION variable = fin complete
+#pragma HLS ARRAY_PARTITION variable = rsn complete
+PINIT_V:
+    for (int v = 0; v < RLBP_NUM_VARS; v++) {
+#pragma HLS UNROLL
+        for (int k = 0; k < 2; k++) {
+#pragma HLS UNROLL
+            lam[k][v] = PRIOR[v];
+            hist[k][v] = 0;
+            hprev[k][v] = false;
+            h[k][v] = false;
+            tt[k][v] = PRIOR[v];
+            prev[k][v] = PRIOR[v];
+        }
+        st1[v] = 0;
+    }
+PINIT_E:
+    for (int e = 0; e < RLBP_NUM_EDGES; e++) {
+#pragma HLS UNROLL
+        m_vc[0][e] = PRIOR[E_VAR[e]];
+        m_vc[1][e] = PRIOR[E_VAR[e]];
+    }
+
+PITER:
+    for (int t = 1; t <= RLBP_MAX_ITER; t++) {
+#pragma HLS LOOP_TRIPCOUNT min = 1 max = RLBP_MAX_ITER avg = 3
+#pragma HLS PIPELINE off
+    CORE:
+        for (int k = 0; k < 2; k++) {
+#pragma HLS UNROLL
+            if (fin[k]) continue;
+        PCHECK:
+            for (int c = 0; c < RLBP_NUM_CHECKS; c++) {
+#pragma HLS UNROLL
+                const int e0 = CHK_PTR[c], e1 = CHK_PTR[c + 1];
+                llr_t min1 = RLBP_LLR_INF, min2 = RLBP_LLR_INF;
+                unsigned char arg = 255;
+                bool par = s[c];
+                for (int d = 0; d < RLBP_MAX_CHK_DEG; d++) {
+#pragma HLS UNROLL
+                    const int e = e0 + d;
+                    if (e < e1) {
+                        llr_t x = m_vc[k][e];
+                        llr_t mag = llr_abs(x);
+                        par ^= (x < 0);
+                        if (mag < min1) { min2 = min1; min1 = mag; arg = d; }
+                        else if (mag < min2) { min2 = mag; }
+                    }
+                }
+                for (int d = 0; d < RLBP_MAX_CHK_DEG; d++) {
+#pragma HLS UNROLL
+                    const int e = e0 + d;
+                    if (e < e1) {
+                        llr_t ext = (d == arg) ? min2 : min1;
+                        llr_t msg = ext * alpha;
+                        bool flip = par ^ (m_vc[k][e] < 0);
+                        m_cv[k][e] = flip ? llr_t(-msg) : msg;
+                    }
+                }
+            }
+        PVAR:
+            for (int v = 0; v < RLBP_NUM_VARS; v++) {
+#pragma HLS UNROLL
+                const int p0 = VAR_PTR[v], p1 = VAR_PTR[v + 1];
+                llr_t acc = 0;
+                for (int d = 0; d < RLBP_MAX_VAR_DEG; d++) {
+#pragma HLS UNROLL
+                    if (p0 + d < p1) acc += m_cv[k][VAR_EDGE[p0 + d]];
+                }
+                const llr_t tv = acc + lam[k][v];
+                const bool nh = tv < 0;
+                const ap_uint<4> hh = (ap_uint<4>)((hist[k][v] << 1) | ap_uint<1>(nh != hprev[k][v]));
+                hist[k][v] = hh;
+                hprev[k][v] = nh;
+                const int pc = (int)hh[0] + (int)hh[1] + (int)hh[2] + (int)hh[3];
+                const int st = ((pc > 3 ? 3 : pc) * 2 + (nh ? 1 : 0)) * 2 + (t > RLBP_MEM_SPLIT ? 1 : 0);
+                if (k == 0) {
+                    const mem_t gm = MEM_TABLE[st];
+                    lam[0][v] = llr_t(PRIOR[v] + gm * (tv - PRIOR[v]));
+                } else {
+                    st1[v] = st;
+                }
+#if RLBP_POST_AVG == 2
+                prev[k][v] = (t == 1) ? tv : tt[k][v];
+#endif
+                tt[k][v] = tv;
+                h[k][v] = nh;
+                for (int d = 0; d < RLBP_MAX_VAR_DEG; d++) {
+#pragma HLS UNROLL
+                    if (p0 + d < p1) {
+                        const int e = VAR_EDGE[p0 + d];
+                        m_vc[k][e] = tv - m_cv[k][e];
+                    }
+                }
+            }
+            bool pbit[RLBP_NUM_CHECKS];
+#pragma HLS ARRAY_PARTITION variable = pbit complete
+            int unsat = 0;
+        PSYN:
+            for (int c = 0; c < RLBP_NUM_CHECKS; c++) {
+#pragma HLS UNROLL
+                bool p = s[c];
+                for (int d = 0; d < RLBP_MAX_CHK_DEG; d++) {
+#pragma HLS UNROLL
+                    if (CHK_PTR[c] + d < CHK_PTR[c + 1]) p ^= h[k][E_VAR[CHK_PTR[c] + d]];
+                }
+                pbit[c] = p;
+                unsat += p;
+            }
+            if (k == 1) {   // check-aware prior update of core 1
+            PMEM2:
+                for (int v = 0; v < RLBP_NUM_VARS; v++) {
+#pragma HLS UNROLL
+                    const int p0 = VAR_PTR[v], p1 = VAR_PTR[v + 1];
+                    int cnt = 0;
+                    for (int d = 0; d < RLBP_MAX_VAR_DEG; d++) {
+#pragma HLS UNROLL
+                        if (p0 + d < p1) cnt += pbit[E_CHK[VAR_EDGE[p0 + d]]];
+                    }
+                    const mem_t gm = MEM_TABLE2[st1[v] * 3 + (cnt > 2 ? 2 : cnt)];
+                    lam[1][v] = llr_t(PRIOR[v] + gm * (tt[1][v] - PRIOR[v]));
+                }
+            }
+            if (unsat < best[k]) { best[k] = unsat; stall[k] = 0; } else { stall[k]++; }
+            const bool done = unsat == 0;
+            const bool halted = !done && t >= RLBP_MIN_ITER && HALT_TABLE[rlbp_state(t, unsat, w0, stall[k])];
+            if (done || halted || t == RLBP_MAX_ITER) {
+                rsn[k] = done ? EXIT_CONVERGED : halted ? EXIT_HALTED : EXIT_MAX_ITER;
+                tex[k] = t;
+                fin[k] = true;
+            }
+        }
+        if (fin[0] && fin[1]) break;
+    }
+
+    // ---- select: lower prior-LLR weight among converged cores (ties: core 0)
+#ifdef RLBP_FIXED
+    typedef ap_fixed<RLBP_LLR_W + 10, RLBP_LLR_I + 10> wgt_t;
+#else
+    typedef float wgt_t;
+#endif
+    wgt_t wa = 0, wb = 0;
+PWGT:
+    for (int v = 0; v < RLBP_NUM_VARS; v++) {
+#pragma HLS UNROLL
+        if (h[0][v]) wa += PRIOR[v];
+        if (h[1][v]) wb += PRIOR[v];
+    }
+    const bool c0 = rsn[0] == EXIT_CONVERGED, c1 = rsn[1] == EXIT_CONVERGED;
+    const bool pick1 = c1 && (!c0 || wb < wa);
+POUT:
+    for (int v = 0; v < RLBP_NUM_VARS; v++) {
+#pragma HLS UNROLL
+        hd[v] = pick1 ? h[1][v] : h[0][v];
+#if RLBP_POST_AVG == 2
+        tot[v] = llr_avg(prev[0][v], tt[0][v]);     // OSD input (used only when neither converged)
+#else
+        tot[v] = tt[0][v];
+#endif
+    }
+    *t_exit = tex[0] > tex[1] ? tex[0] : tex[1];
+    return (c0 || c1) ? (unsigned char)EXIT_CONVERGED : rsn[0];
+}
+#endif
+
 // ---- OSD-0 fallback: aura.decoding.osd.osd0 ---------------------------------
 // Insert check-matrix columns in posterior order (most likely flipped first,
 // ties by index = stable sort) into an incremental GF(2) basis; stop as soon as
@@ -337,7 +537,11 @@ INIT_V:
     // trivial: 0 iterations, converged.  unexplainable: 0 iterations, needs OSD.
     int t_exit = 0;
     unsigned char reason = w0 == 0 ? EXIT_TRIVIAL : EXIT_MAX_ITER;
+#if RLBP_PAIR
+    if (w0 != 0 && !unexplainable) reason = bp_iterate_pair(s, w0, tot, hd, &t_exit);
+#else
     if (w0 != 0 && !unexplainable) reason = bp_iterate(s, w0, tot, hd, &t_exit);
+#endif
 
     // ---- packed outputs
     vbits_t hb = 0;
