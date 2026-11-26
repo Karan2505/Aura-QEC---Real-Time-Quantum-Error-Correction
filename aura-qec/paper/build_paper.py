@@ -199,29 +199,28 @@ def fig_bb72_lambda():
 def fig_fpga():
     """Measured surface-3 builds on the KV260: resources (share of device) and co-sim latency."""
     dev = {"LUT": 117120, "FF": 234240, "DSP": 1248, "BRAM": 144}
-    base = {"LUT": 11698, "FF": 9172, "DSP": 2, "BRAM": 1}
-    oam = {"LUT": 11991, "FF": 10857, "DSP": 57, "BRAM": 1}
+    builds = [("RL-BP baseline", GREY, {"LUT": 11698, "FF": 9172, "DSP": 2, "BRAM": 1}, (5, 20, 380)),
+              ("OAM-BP", C1, {"LUT": 11991, "FF": 10857, "DSP": 57, "BRAM": 1}, (5, 14, 309)),
+              ("OAM pair (2 cores)", "#184f95", {"LUT": 24866, "FF": 23833, "DSP": 113, "BRAM": 1}, (5, 22, 401))]
     import numpy as np
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(6.8, 2.8), gridspec_kw={"width_ratios": [1.35, 1]})
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(6.8, 2.9), gridspec_kw={"width_ratios": [1.35, 1]})
     k = list(dev)
     x = np.arange(len(k))
-    w = 0.36
-    a1.bar(x - w / 2 - 0.01, [100 * base[i] / dev[i] for i in k], w, color=GREY, label="RL-BP baseline")
-    a1.bar(x + w / 2 + 0.01, [100 * oam[i] / dev[i] for i in k], w, color=C1, label="OAM-BP")
+    w = 0.26
+    for j, (lab, c, r, _) in enumerate(builds):
+        a1.bar(x + (j - 1) * (w + 0.02), [100 * r[i] / dev[i] for i in k], w, color=c, label=lab)
     a1.set_xticks(x, k)
     a1.set_ylabel("Share of XCK26 (%)")
-    a1.legend(fontsize=8.5)
+    a1.legend(fontsize=8)
     a1.grid(axis="x", visible=False)
-    lat = {"min": (5, 5), "mean": (20, 14), "max": (380, 309)}
     x2 = np.arange(3)
-    a2.bar(x2 - w / 2 - 0.01, [v[0] * 3.333 for v in lat.values()], w, color=GREY)
-    a2.bar(x2 + w / 2 + 0.01, [v[1] * 3.333 for v in lat.values()], w, color=C1)
+    for j, (lab, c, _, lat) in enumerate(builds):
+        a2.bar(x2 + (j - 1) * (w + 0.02), [v * 3.333 for v in lat], w, color=c)
     a2.set_yscale("log")
-    a2.set_xticks(x2, list(lat))
+    a2.set_ylim(top=4000)
+    a2.set_xticks(x2, ["min", "mean", "max"])
     a2.set_ylabel("Co-sim latency (ns, 300 MHz)")
     a2.grid(axis="x", visible=False)
-    for i, v in enumerate(lat.values()):
-        a2.text(i + w / 2, v[1] * 3.333 * 1.12, f"{v[1] * 3.333:.0f}", ha="center", fontsize=8, color=INK)
     fig.tight_layout()
     return save(fig, "p5_fpga.png")
 
@@ -271,7 +270,7 @@ FIGS = {
                                   "retraining."),
     "fpga": (fig_fpga(), "Figure 5. Measured surface-3 builds on the Kria KV260 (XCK26, 300 MHz, post-route). Left: "
                          "share of device resources. Right: co-simulation latency per decode including the OSD-0 "
-                         "fallback."),
+                         "fallback (values in Table 7)."),
 }
 _s = fig_surface()
 if _s:

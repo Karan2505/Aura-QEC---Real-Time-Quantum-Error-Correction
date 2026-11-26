@@ -4,7 +4,7 @@
 %running: OAM-BP  ·  Draft paper
 
 > Belief-propagation (BP) decoders are attractive for real-time quantum error correction because they map to fully parallel, fixed-latency hardware, but on quantum LDPC codes they fail by oscillating. Memory BP and Relay-BP damp this with a memory term whose strength is either fixed or drawn at random, and recover accuracy by running several BP passes. We propose **oscillation-aware memory BP (OAM-BP)**: each variable node chooses its own memory strength at every iteration from a **16-entry table indexed by its local oscillation state** (recent sign flips, current hard decision and decoding phase). The table is learned offline by the cross-entropy method, a policy-search method, so the decoder remains a learned controller of BP while adding only a 4-bit register and a table lookup per variable.
-> On the [[72,12,6]] bivariate-bicycle code at calibrated device noise, a single OAM-BP run reaches a logical error rate of **6.40 × 10⁻²** with a 200-iteration worst case and 15.6 mean iterations. That is significantly better than the best fixed memory strength (7.13 × 10⁻², paired McNemar p = 5 × 10⁻⁵), matches Relay-BP-1 and a four-member memory-BP ensemble within error bars, and needs about half the ensemble's iterations. Because a single table's remaining errors are mostly converged-but-wrong solutions, we add a second, **check-aware 48-state table** that is no better on its own (p = 0.50) but fails on different shots. Running both tables and keeping the lower-weight solution (**OAM pair**) lowers the error rate to **5.69 × 10⁻²** (p = 7 × 10⁻¹⁰ against single OAM-BP), and to 5.88 × 10⁻² when each run is capped at 100 iterations, the same 200-iteration total worst case. That beats a four-member memory-BP ensemble (6.16 × 10⁻²) at about half its iterations. On surface codes the same table, without retraining, keeps the error rate of BP+OSD-0 while halving the OSD fallback rate. We implement OAM-BP in a fully parallel HLS decoder on an AMD Kria KV260: the surface-3 decoder closes timing at 300 MHz post-route, adds 2.5% LUTs over the baseline, keeps 13 cycles per BP iteration and lowers the mean decode latency from 67 ns to 47 ns.
+> On the [[72,12,6]] bivariate-bicycle code at calibrated device noise, a single OAM-BP run reaches a logical error rate of **6.40 × 10⁻²** with a 200-iteration worst case and 15.6 mean iterations. That is significantly better than the best fixed memory strength (7.13 × 10⁻², paired McNemar p = 5 × 10⁻⁵), matches Relay-BP-1 and a four-member memory-BP ensemble within error bars, and needs about half the ensemble's iterations. Because a single table's remaining errors are mostly converged-but-wrong solutions, we add a second, **check-aware 48-state table** that is no better on its own (p = 0.50) but fails on different shots. Running both tables and keeping the lower-weight solution (**OAM pair**) lowers the error rate to **5.69 × 10⁻²** (p = 7 × 10⁻¹⁰ against single OAM-BP), and to 5.88 × 10⁻² when each run is capped at 100 iterations, the same 200-iteration total worst case. That beats a four-member memory-BP ensemble (6.16 × 10⁻²) at about half its iterations. On surface codes the same table, without retraining, keeps the error rate of BP+OSD-0 while halving the OSD fallback rate. We implement OAM-BP in a fully parallel HLS decoder on an AMD Kria KV260: the surface-3 decoder closes timing at 300 MHz post-route, adds 2.5% LUTs over the baseline, keeps 13 cycles per BP iteration and lowers the mean decode latency from 67 ns to 47 ns. A two-core OAM pair kernel also closes timing at 300 MHz post-route, with 21% of the device's LUTs and 14 cycles per iteration.
 
 ## 1. Introduction
 
@@ -99,7 +99,7 @@ The mix is written as Λ(0) + γ·(M − Λ(0)), which needs one multiplier per 
 
 **An HLS pitfall.** With the (1 − γ)·Λ(0) + γ·M form, Vitis HLS 2025.1 mapped the expression onto a DSP pre-adder that takes the constant 1 as a 1-bit operand. The resulting RTL disagreed with the C model, and only C/RTL co-simulation caught it: co-simulation measured 4.8% logical error against 2.0% in C. Rewriting the expression as above gives the same exact value, and co-simulation then passes. We also found that HLS turns a by-reference output array into an output-only port, so state that must persist across iterations is kept local. We report both as practical lessons for HLS decoders.
 
-**OAM pair in hardware.** The pair instantiates two OAM-BP cores on the same syndrome register. The second core differs only in a 48-entry Γ ROM addressed with two more state bits, the unsatisfied-check count per variable (a 2-bit saturating popcount over the check bits already computed for the convergence test). Each core accumulates its solution weight Σ Λⱼ(0)·x̂ⱼ with an adder tree over the hard decisions when it converges, and a single comparator selects the output. The latency is that of the slower core, not the sum. The pair has not been built yet; on surface-3 we estimate about 2 × 12k LUT (about 21% of the XCK26) and 2 × 57 DSP from the measured single-core build (Table 6).
+**OAM pair in hardware.** The pair instantiates two OAM-BP cores on the same syndrome register. The second core differs only in a 48-entry Γ ROM addressed with two more state bits, the unsatisfied-check count per variable (a 2-bit saturating popcount over the check bits already computed for the convergence test). Each core accumulates its solution weight Σ Λⱼ(0)·x̂ⱼ with an adder tree over the hard decisions when it converges, and a single comparator selects the output. The latency is that of the slower core, not the sum. In the HLS code both cores sit in one iteration loop and update in lockstep; a core that has stopped holds its state, and the loop ends when both have stopped. We built the pair on surface-3 (Section 6.1).
 
 ## 5. Evaluation
 
@@ -178,54 +178,59 @@ At lower noise OAM-BP is never significantly worse than the best fixed γ (λ = 
 
 On surface codes BP+OSD-0 is already close to MWPM, and OAM-BP keeps that accuracy: every pair of intervals overlaps. The practical gain is latency. **OAM-BP halves the share of shots that need the slow OSD stage** (35–53% fewer) and cuts mean iterations by 20–30%. This happens even though Γ was trained on a different code family.
 
+**The OAM pair on surface codes.** With the same settings, the pair does not improve the surface-code error rate: on d = 3 it makes exactly the same errors as single OAM-BP at every λ, and on d = 5 the differences are within noise (p ≥ 0.24). Small surface codes rarely have the converged-but-wrong failures that the pair fixes on BB-72. The pair only lowers the OSD fallback rate further (d = 5, λ = 1: 5.17% → 4.39%; λ = 2: 18.9% → 15.8%). Its accuracy gain is a property of the qLDPC code, and the surface-3 build in Section 6 measures its hardware cost.
+
 {{fig:surface}}
 
 ## 6. FPGA implementation results
 
 ### 6.1 Measured builds
 
-Both builds target the Kria KV260 (XCK26-SFVC784-2LV-C) at a 3.333 ns clock (300 MHz), go through Vivado place and route, and are verified on 1,000 test vectors. The C model matches the Python golden model (fixed-point logical error within 0.5 percentage points), and C/RTL co-simulation passes.
+All three builds target the Kria KV260 (XCK26-SFVC784-2LV-C) at a 3.333 ns clock (300 MHz), go through Vivado place and route, and are verified on 1,000 test vectors. The C model matches the Python golden model (fixed-point logical error within 0.5 percentage points), and C/RTL co-simulation passes.
 
 **Table 5.** Build configuration.
 
-| Item | RL-BP baseline | OAM-BP |
-|---|---|---|
-| Code / graph | surface-3, 16 checks, 55 vars, 94 edges | same |
-| Arithmetic | 10-bit LLR ap_fixed<10,6>, α = 0.75 | same; Γ in 12-bit fixed (9 bits stored) |
-| BP schedule | flooding, fully parallel, max 30 it. | same |
-| Stopping | converge / learned RL halting table | same |
-| OSD input | mean of last two posteriors | same |
-| Memory | none | per-variable, learned 16-state Γ |
+| Item | RL-BP baseline | OAM-BP | OAM pair |
+|---|---|---|---|
+| Code / graph | surface-3, 16 checks, 55 vars, 94 edges | same | same |
+| Arithmetic | 10-bit LLR ap_fixed<10,6>, α = 0.75 | same LLRs, α = 1 (memory replaces normalisation); Γ in 12-bit fixed | as OAM-BP |
+| BP schedule | flooding, fully parallel, max 30 it. | same | two cores in lockstep |
+| Stopping | converge / learned RL halting table | same | same, per core |
+| OSD input | mean of last two posteriors | same | core 0, only if neither core converges |
+| Memory | none | per-variable, learned 16-state Γ | core 0: 16-state Γ; core 1: 48-state check-aware Γ |
+| Output | BP or OSD-0 | BP or OSD-0 | lower-weight converged solution, else OSD-0 |
 
 **Table 6.** Post-implementation resources and timing (Vivado 2025.1). Utilisation in % of the XCK26.
 
-| Metric | RL-BP baseline | OAM-BP | Change |
-|---|---|---|---|
-| LUT | 11,698 (10.0%) | 11,991 (10.2%) | +293 (+2.5%) |
-| FF | 9,172 (3.9%) | 10,857 (4.6%) | +1,685 |
-| DSP | 2 (0.2%) | 57 (4.6%) | +55 (one per variable) |
-| BRAM | 1 (0.7%) | 1 (0.7%) | 0 |
-| CLB | 2,356 | 2,458 | +102 |
-| Clock period, post-synthesis | 2.801 ns | 2.837 ns | +0.036 ns |
-| Clock period, post-route | 3.213 ns | 3.243 ns | +0.030 ns |
-| Achievable clock (post-route) | 311 MHz | 308 MHz | timing met at 300 MHz |
+| Metric | RL-BP baseline | OAM-BP | Change | OAM pair |
+|---|---|---|---|---|
+| LUT | 11,698 (10.0%) | 11,991 (10.2%) | +293 (+2.5%) | 24,866 (21.2%) |
+| FF | 9,172 (3.9%) | 10,857 (4.6%) | +1,685 | 23,833 (10.2%) |
+| DSP | 2 (0.2%) | 57 (4.6%) | +55 (one per variable) | 113 (9.1%) |
+| BRAM | 1 (0.7%) | 1 (0.7%) | 0 | 1 (0.7%) |
+| CLB | 2,356 | 2,458 | +102 | 5,202 |
+| Clock period, post-synthesis | 2.801 ns | 2.837 ns | +0.036 ns | 2.838 ns |
+| Clock period, post-route | 3.213 ns | 3.243 ns | +0.030 ns | 3.318 ns |
+| Achievable clock (post-route) | 311 MHz | 308 MHz | timing met at 300 MHz | 301 MHz, met |
 
 **Table 7.** Latency and throughput (C/RTL co-simulation, 1,000 vectors, 300 MHz).
 
-| Metric | RL-BP baseline | OAM-BP |
-|---|---|---|
-| Cycles per BP iteration | 13 | 13 |
-| Latency, min (cycles / ns) | 5 / 17 | 5 / 17 |
-| Latency, mean (cycles / ns) | 20 / 67 | **14 / 47** |
-| Latency, max (cycles / ns) | 380 / 1,267 | **309 / 1,030** |
-| Initiation interval, mean (cycles) | 21 | 15 |
-| Throughput, mean (decodes / µs) | 14.3 | **20.0** |
-| Vector-set logical error (kernel / golden) | – / 2.20% | 1.90% / 2.00% |
-| OSD fallback rate on the vectors | 4.3% | 1.2% |
+| Metric | RL-BP baseline | OAM-BP | OAM pair |
+|---|---|---|---|
+| Cycles per BP iteration | 13 | 13 | 14 |
+| Latency, min (cycles / ns) | 5 / 17 | 5 / 17 | 5 / 17 |
+| Latency, mean (cycles / ns) | 20 / 67 | **14 / 47** | 22 / 73 |
+| Latency, max (cycles / ns) | 380 / 1,267 | **309 / 1,030** | 401 / 1,337 |
+| Initiation interval, mean (cycles) | 21 | 15 | 23 |
+| Throughput, mean (decodes / µs) | 14.3 | **20.0** | 13.0 |
+| Vector-set logical error (kernel / golden) | – / 2.20% | 1.90% / 2.00% | 2.00% / 1.90% |
+| OSD fallback rate on the vectors | 4.3% | 1.2% | 0.9% |
 
 {{fig:fpga}}
 
 OAM-BP costs 293 LUTs, 1,685 flip-flops and 55 DSP slices on surface-3. It leaves the per-iteration latency unchanged at 13 cycles and the clock at 300 MHz. Because fewer shots fall back to OSD-0, mean latency drops by 30% and worst-case latency by 19%.
+
+**The OAM pair build.** The two-core kernel passes C simulation bit-exactly in floating point against the Python model of the pair (all 1,000 vectors) and within tolerance in fixed point, and C/RTL co-simulation passes. It costs 2.07 × the LUTs and 1.98 × the DSPs of the single-core OAM-BP, as expected for two cores plus a weight adder tree and comparator, and still closes timing at 300 MHz post-route (3.318 ns, with less slack than the single core). The cores run in parallel: one iteration takes 14 cycles instead of 13. Mean latency rises from 14 to 22 cycles (73 ns), most likely because the shared iteration loop, the weight comparison and the wider initialisation add fixed cycles to every non-trivial shot, which dominate on surface-3 where most shots need under one iteration. On surface-3 the pair brings no accuracy gain (Section 5.4); the build establishes that the BB-72 accuracy gain costs 2 × logic, one extra cycle per iteration and no change in clock frequency.
 
 ### 6.2 Scaling: surface-5 and BB-72 (modelled)
 
@@ -254,9 +259,9 @@ The OAM overhead comes from Table 6: about 5.3 LUT, 31 FF and 1 DSP per variable
 | Relay-BP-1, cap 200 | 6.70e-2 | 8.7 µs | 31.3 µs | 18.5 |
 | **OAM-BP, cap 200** | **6.40e-2** | **8.7 µs** | **31.3 µs** | **15.6** |
 | Ensemble, agree-stop | 6.31e-2 | 8.7 µs | 31.3 µs | 32.5 |
-| **OAM pair, cap 100 per run, two cores in parallel** | **5.88e-2** | **4.3 µs** (2 × LUT) | **15.7 µs** (2 × LUT) | 28.2 (sum) |
+| **OAM pair, cap 100 per run, two cores in parallel** | **5.88e-2** | **4.7 µs** (2 × LUT) | **16.0 µs** (2 × LUT) | 28.2 (sum) |
 
-At an equal iteration cap all OSD-free decoders share the same worst case, and they differ in accuracy and mean latency. OAM-BP has the lowest mean cost at Relay-BP-level accuracy and needs no random number generation. The ensemble's small accuracy edge costs twice the mean latency. The OAM pair changes the trade-off: with two cores side by side and 100 iterations per core, it is the most accurate decoder in the table and has half the worst-case latency of the single-run decoders, at twice the logic. At P = 512 two cores need about 115k LUT, more than a KV260 can route in practice, so for BB-72 the pair targets a larger device.
+At an equal iteration cap all OSD-free decoders share the same worst case, and they differ in accuracy and mean latency. OAM-BP has the lowest mean cost at Relay-BP-level accuracy and needs no random number generation. The ensemble's small accuracy edge costs twice the mean latency. The OAM pair changes the trade-off (its row uses 14 cycles per iteration, as measured on the surface-3 pair build, plus one extra cycle in the partially parallel case): with two cores side by side and 100 iterations per core, it is the most accurate decoder in the table and has half the worst-case latency of the single-run decoders, at twice the logic. At P = 512 two cores need about 115k LUT, more than a KV260 can route in practice, so for BB-72 the pair targets a larger device.
 
 ## 7. Related work
 
@@ -281,7 +286,7 @@ Neural BP learns weights indexed by position (edge and iteration), so its parame
 - **Statistics.** BB-72 results use 10,000 test shots per point. The headline comparisons are significant, but finer ones (for example λ = 0.5) need about 50,000 shots.
 - **Ablations still to run:** which state features matter (flip count only, adding the hard decision, adding the phase), table size, and a sweep of the training λ.
 - **Larger codes.** BB-144 [[144,12,12]] has only been probed in software.
-- **OAM pair hardware.** The pair is evaluated in software and costed from the single-core build; a two-core kernel with the weight comparator is the next build. Its surface-code accuracy has not been measured.
+- **OAM pair hardware.** The pair is built and verified on surface-3, where it brings no accuracy gain; its BB-72 hardware cost is modelled from that build. A partially parallel BB-72 pair kernel is the step that would show the accuracy gain in hardware.
 - **More learned tables.** Two tables trained independently already give an 11% gain; training further tables explicitly for diversity (for example, scoring candidates on the shots the existing tables get wrong) is a natural next step. A sequential relay of OAM legs with warm starts gave no gain in training (about 6.5 × 10⁻²), so we did not pursue it.
 - **Training noise.** The cross-entropy method scores candidates on 4,000 shots, where the sampling error (about ±0.4 percentage points) is as large as the differences it tries to resolve. Larger or paired training sets should help.
 
@@ -310,6 +315,6 @@ Moving learned control from the shot level to the variable level turns a control
 ## Appendix B. Reproducibility
 
 - **Software.** The decoder library has MinSumBP with `memory_table=` (verified identical, shot for shot, to the experiment implementation) and 128 unit tests.
-- **Experiments:** `oam_bp.py` (training and Table 3), `oam_ensemble.py` (Tables 1–2), `surface_oam.py` (Table 4), `oam2.py` (check-aware table and relay legs; `oam2_unsat_L1_S1.csv`), `oam_pair.py` (OAM pair in Tables 1–3; `oam_pair_cap200.csv`, `oam_pair_cap100.csv`), `cost_model.py` (Tables 8–9).
-- **Hardware.** `export_hls.py --memory-table` generates the kernel configuration and vectors. `run_builds.ps1` runs C simulation, synthesis, co-simulation and Vivado implementation and prints the numbers in Tables 6–7.
+- **Experiments:** `oam_bp.py` (training and Table 3), `oam_ensemble.py` (Tables 1–2), `surface_oam.py` (Table 4), `oam2.py` (check-aware table and relay legs; `oam2_unsat_L1_S1.csv`), `oam_pair.py` (OAM pair in Tables 1–3; `oam_pair_cap200.csv`, `oam_pair_cap100.csv`), `surface_pair.py` (pair on surface codes; `surface_pair.csv`), `cost_model.py` (Tables 8–9).
+- **Hardware.** `export_hls.py --memory-table` generates the kernel configuration and vectors; adding `--memory-table2` with the 48-state table builds the OAM pair (`RLBP_PAIR`). The surface-3 OAM builds use `--alpha 1.0`. `run_builds.ps1` runs C simulation, synthesis, co-simulation and Vivado implementation and prints the numbers in Tables 6–7.
 - **Surface-5 build on a larger machine:** `export_hls.py --code surface:5 --memory-table results/oam_gamma_bb72.json`, then `run_builds.ps1 s5_oam`. Allow 16 GB or more of RAM.
