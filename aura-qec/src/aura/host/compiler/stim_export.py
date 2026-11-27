@@ -66,7 +66,7 @@ def to_stim_text(program: QpuProgram, detectors: Sequence[Sequence[int]], observ
         elif k == "RESET":
             out.append(f"R {o.qubits[0]}\n")
         if snap is not None and k != "MEASURE":
-            for loc in N.op_noise(k, o.qubits, snap):
+            for loc in N.op_noise(k, o.qubits, snap, o.phase_q):
                 out.append(_pauli_channel(loc.qubits, loc.probs))
     for i, accs in enumerate(detectors):
         recs = " ".join(f"rec[{acq_rec[a] - nrec}]" for a in accs)

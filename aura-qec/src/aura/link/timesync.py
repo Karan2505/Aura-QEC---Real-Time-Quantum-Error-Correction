@@ -39,7 +39,7 @@ class TimeSyncConfig:
     lock_threshold_ps: int = 2 * NS         # |offset| below this ...
     lock_samples: int = 4                   # ... for this many consecutive samples => locked
     unlock_threshold_ps: int = 20 * NS
-    asymmetry_ps: int = 0                   # known (calibrated) path asymmetry, slave->master minus master->slave
+    asymmetry_ps: int = 0                   # known (calibrated) path asymmetry, master->slave minus slave->master (offset = (ms - sm - asym)/2)
     max_ppm: float = 500.0
 
 
@@ -55,10 +55,13 @@ class PiServo:
         if self.first or abs(offset_ps) > c.step_threshold_ps:
             self.first = False
             return "step", -offset_ps
-        ki_term = c.ki * offset_ps / interval_ps
-        self.drift += ki_term
-        f = -(c.kp * offset_ps / interval_ps + self.drift)
+        # a measured interval far below nominal (coarse OS clock, burst of late
+        # responses) would blow up offset/interval; floor it at half the nominal period
+        interval_ps = max(interval_ps, 0.5 * c.interval_ps)
         lim = c.max_ppm * 1e-6
+        # integrator with anti-windup: it can never demand more than the steering range
+        self.drift = max(-lim, min(lim, self.drift + c.ki * offset_ps / interval_ps))
+        f = -(c.kp * offset_ps / interval_ps + self.drift)
         return "freq", max(-lim, min(lim, f))
 
 
@@ -165,13 +168,19 @@ class TimeSyncSlave:
             self.clock.step(int(round(v)))
             self.m.counter("timesync.steps").inc()
             self._good = 0
+            # exchanges still in flight carry pre-step timestamps; using them would
+            # correct the same offset twice (and oscillate with growing amplitude)
+            self._t2.clear()
+            self._t12.clear()
+            self._t3.clear()
+            self._last_sample_t = None
         else:
             self.clock.adjust_frequency(v * 1e6)
         # lock detection with hysteresis
         if abs(offset) <= self.cfg.lock_threshold_ps and kind == "freq":
             self._good += 1
-        elif abs(offset) > self.cfg.unlock_threshold_ps:
-            self._good = 0
+        else:
+            self._good = 0          # lock needs consecutive good samples
         was = self.locked
         if not self.locked and self._good >= self.cfg.lock_samples:
             self.locked = True

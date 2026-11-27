@@ -84,6 +84,17 @@ class RunResult:
                          f"[{lo:.4f}, {hi:.4f}]  raw {p.raw_logical_errors}/{p.shots}  "
                          f"det-rate {p.detection_rate:.4f} (model {p.predicted_detection_rate or float('nan'):.4f})"
                          f"  missing-cor {p.missing_corrections}")
+        c = (self.decoder_stats or {}).get("counters", {})
+        n_bp = c.get("bp.shots", 0)
+        if n_bp:
+            h = self.decoder_stats.get("histograms", {}).get("bp.iterations", {})
+            p99 = h.get("p99")
+            lines.append(f"  decoder iterations: mean {c.get('bp.iterations_total', 0) / n_bp:.2f}"
+                         + (f"  p99 {p99:.0f}" if p99 is not None else "")
+                         + f"  trivial {c.get('bp.trivial', 0) / n_bp:.3f}  converged {c.get('bp.converged', 0) / n_bp:.3f}"
+                         f"  OSD fallback {c.get('bp.fallback_osd', 0) / n_bp:.3f}"
+                         f"  halted early {c.get('bp.halted_early', 0) / n_bp:.3f}"
+                         f"  budget exhausted {c.get('bp.wcet_forced', 0) / n_bp:.3f}")
         for k, v in self.latency.items():
             if isinstance(v, dict) and v.get("p50") is not None:
                 lines.append(f"  latency {k}: p50 {v['p50'] / 1e3:.0f} ns  p99 {v['p99'] / 1e3:.0f} ns  "

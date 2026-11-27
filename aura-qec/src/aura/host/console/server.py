@@ -100,9 +100,10 @@ def _validate_run(p: dict) -> dict:
     out["basis"] = str(p.get("basis", "Z")).upper()
     if out["basis"] not in ("Z", "X"):
         raise AuraError("basis must be Z or X")
+    from ...lab import DECODERS
     out["decoder"] = str(p.get("decoder", "matching"))
-    if out["decoder"] not in ("matching", "oracle", "null"):
-        raise AuraError("decoder must be matching, oracle or null")
+    if out["decoder"] not in DECODERS:
+        raise AuraError(f"decoder must be one of {', '.join(sorted(DECODERS))}")
     out["mode"] = str(p.get("mode", "stream"))
     if out["mode"] not in ("stream", "batch"):
         raise AuraError("mode must be stream or batch")

@@ -39,7 +39,8 @@ from .link import LinkConfig, build_sim_link
 from .link.endpoint import LinkState
 from .qpu import VirtualQPU, build_device
 from .qpu.device import PROFILES
-from .testbed import MatchingDecoderStub, NullDecoderStub, OracleDecoderStub
+from .testbed import (BPOSDDecoderStub, MatchingDecoderStub, NullDecoderStub, OracleDecoderStub,
+                      RLBPDecoderStub)
 
 
 @dataclass
@@ -58,6 +59,12 @@ class LabConfig:
     feedline_size: int = 8
     decoder_latency_ns: float = 400.0
     decoder_per_event_ns: float = 20.0
+    # iterative decoders (bposd, rlbp): latency = base + bp_iter_ns * iterations + osd_ns * [fallback]
+    bp_max_iter: int = 30
+    bp_iter_ns: float = 20.0
+    osd_ns: float = 400.0
+    rlbp_policy: str = ""              # saved RL-BP policy (aura train-decoder); empty: train from the DEM
+    rlbp_train_episodes: int = 4000
 
     def validate(self) -> None:
         if self.profile not in PROFILES:
@@ -69,9 +76,16 @@ class LabConfig:
             raise ConfigError("duplicate patch ids")
         if self.drift_speedup <= 0:
             raise ConfigError("drift_speedup must be > 0")
+        if self.bp_max_iter < 1:
+            raise ConfigError("bp_max_iter must be >= 1")
+        if self.bp_iter_ns <= 0 or self.osd_ns < 0:
+            raise ConfigError("bp_iter_ns must be > 0 and osd_ns >= 0")
+        if self.rlbp_train_episodes < 1:
+            raise ConfigError("rlbp_train_episodes must be >= 1")
 
 
-DECODERS = {"null": NullDecoderStub, "oracle": OracleDecoderStub, "matching": MatchingDecoderStub}
+DECODERS = {"null": NullDecoderStub, "oracle": OracleDecoderStub, "matching": MatchingDecoderStub,
+            "bposd": BPOSDDecoderStub, "rlbp": RLBPDecoderStub}
 
 
 class VirtualLab:
@@ -119,6 +133,9 @@ class VirtualLab:
     @classmethod
     def from_file(cls, path: str) -> "VirtualLab":
         d = load_file(path)
+        unknown = set(d) - {"lab", "link", "control", "calibration"}
+        if unknown:
+            raise ConfigError(f"{path}: unknown section(s) {sorted(unknown)}; expected lab, link, control, calibration")
         lab = from_dict(LabConfig, d.get("lab", {}))
         link = from_dict(LinkConfig, d["link"]) if "link" in d else None
         ctl = from_dict(ControlTiming, d["control"]) if "control" in d else None
@@ -213,8 +230,15 @@ class VirtualLab:
 
     def _make_stub(self, decoder: str):
         cls = DECODERS[decoder]
+        kw = {}
+        if issubclass(cls, BPOSDDecoderStub):
+            kw = dict(max_iter=self.cfg.bp_max_iter, iter_ps=int(self.cfg.bp_iter_ns * NS),
+                      osd_ps=int(self.cfg.osd_ns * NS))
+        if issubclass(cls, RLBPDecoderStub):
+            kw.update(policy=self.cfg.rlbp_policy or None, train_episodes=self.cfg.rlbp_train_episodes,
+                      seed=self.cfg.seed)
         return cls(self.sim, None, base_latency_ps=int(self.cfg.decoder_latency_ns * NS),
-                   per_event_ps=int(self.cfg.decoder_per_event_ns * NS))
+                   per_event_ps=int(self.cfg.decoder_per_event_ns * NS), **kw)
 
     def _run_stream(self, ce: CompiledExperiment, shots: int, decoder: str, timeout_us: Optional[float]) -> RunResult:
         t_wall = time.perf_counter()
@@ -283,13 +307,11 @@ class VirtualLab:
             bits[:, a] = b
         stub = self._make_stub(decoder)
         stub.on_session("config", {"manifest": ce.manifest, "epoch": ce.config_epoch})
-        recs = []
-        for s in range(shots):
-            r = _BatchRecord(s, bits[s])
-            for pm in ce.manifest.patches:
-                obs, status, _ = stub.decode(pm, bits[s])
-                r.corrections[pm.patch_id] = obs
-            recs.append(r)
+        recs = [_BatchRecord(s, bits[s]) for s in range(shots)]
+        for pm in ce.manifest.patches:
+            obs, _, _ = stub.decode_batch(pm, bits)          # vectorised over all shots
+            for s, r in enumerate(recs):
+                r.corrections[pm.patch_id] = obs[s]
         # advance virtual time as the hardware would have
         dt = shots * (ce.qpu_program.shot_duration_ps + ce.spec.options.rep_delay_ps)
         self.sim.run(until_ps=self.sim.now + dt)

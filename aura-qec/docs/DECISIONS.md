@@ -27,6 +27,11 @@
    are used. The transport is AURA-Link.
 7. **Runtime dependencies are numpy and scipy only.** PyMatching is optional (the
    reference decoder stand-in). Stim is used only in tests.
+8. **RL-BP is a halting policy, not a learned decoder.** The RL decides *when to
+   stop iterating*; BP and OSD still do the decoding. This keeps correctness
+   anchored to well-understood algorithms. A bad policy can only cost latency or
+   hand a shot to OSD early; it cannot emit arbitrary corrections. The learned
+   artefact is also a tiny table (1,320 × 2) that maps directly to FPGA block RAM.
 
 ## Decisions that need you
 
@@ -35,7 +40,9 @@
 | D1 | **Update the design document (Section 5) to AURA-Link v1.1?** | Recommended: yes, the implementation is the reference now. I can regenerate the Word document. |
 | D2 | **BB-code syndrome schedule.** The generic "separated" schedule is valid for any CSS code but is not depth-optimal, and its circuit-level distance is not yet verified. | Next step: implement the published depth-8 interleaved BB schedule (Bravyi et al. 2024) and verify its distance. Needs your go-ahead because it changes the BB decoder manifest (new epoch). |
 | D3 | **Crosstalk characterisation node.** The DEM currently omits spectator crosstalk, a measured ~7 % detection-rate bias on BB-72. | Add a spectator-Ramsey calibration node (a few hours of work) so decoder priors include it. |
-| D4 | **Leakage in the decoder.** Leakage cannot be expressed in a Pauli DEM. | Leakage flags are already in every SYN frame. Decide whether Layer 2/3 consumes them (erasure-style BP priors) — relevant to the RL-BP design. |
+| D4 | **Leakage in the decoder.** Leakage cannot be expressed in a Pauli DEM. | Leakage flags are already in every SYN frame. The RL-BP reference decoder now exists (`aura.decoding`). `MinSumBP.decode(prior_llr=...)` accepts per-shot priors, so the remaining step is to map leakage flags and soft LLRs to erasure-style priors. |
+| D9 | **RL-BP cost model.** The policy minimises iterations × `bp_iter_ns` + fallback × `osd_ns` + errors × `fail_cost`. The defaults (20 ns / 400 ns / 2000 iterations) are placeholders. | Set `osd_ns` / `bp_iter_ns` from the target FPGA implementation; that ratio decides how aggressively the policy halts. |
+| D10 | **What the RL-BP policy is trained on.** | Recommended: device shots (`aura train-decoder --source device`). They include noise the DEM omits, and the policy is retrained whenever the calibration epoch changes. |
 | D5 | **Control-latency defaults.** 400/120/140/40/160 ns are order-of-magnitude values from the literature. | Replace with measurements from the control hardware you target, if you have one in mind. |
 | D6 | **Link rate / FPGA clock.** Defaults: SFP+ 10.3125 GBd, 300 MHz core. | Choose the real target (e.g. Alveo U50 GTY at 25G with a ≥ 391 MHz 64-bit datapath, or a 128-bit datapath at lower clock). |
 | D7 | **Licence and repository hosting.** | The package metadata says "Proprietary". Choose a licence before sharing with collaborators. |

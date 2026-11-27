@@ -106,18 +106,20 @@ def idle_channel(qn: QubitNoise, gap_ps: float, echoed: bool = False, z_state: i
     return ch
 
 
-def sq_gate_channel(qn: QubitNoise, angle_rad: float, duration_ps: float, overrot: float) -> np.ndarray:
+def sq_gate_channel(qn: QubitNoise, angle_rad: float, duration_ps: float, overrot: float,
+                    phase_q: int = 0) -> np.ndarray:
     """Noise after a single-qubit drive pulse of nominal rotation ``angle_rad``.
 
     Decoherence during the pulse + residual depolarising error + Pauli-twirled
     coherent over-rotation ``overrot`` (fractional angle error, along the drive
-    axis; twirled to an X-type error)."""
+    axis ``phase_q * pi/2``: twirled to an X error for an X-axis drive (even
+    ``phase_q``) and to a Y error for a Y-axis drive (odd ``phase_q``))."""
     ch = P.pta_idle(qn.t1_ps, qn.t2_star_ps, duration_ps)
     if qn.sq_depol:
         ch = P.compose(ch, P.depolarize1(qn.sq_depol))
     if overrot:
         px = P.coherent_rotation_twirl(angle_rad * overrot)
-        ch = P.compose(ch, P.pauli_channel_1(px, 0.0, 0.0))
+        ch = P.compose(ch, P.pauli_channel_1(0.0, px, 0.0) if phase_q % 2 else P.pauli_channel_1(px, 0.0, 0.0))
     return ch
 
 
@@ -129,8 +131,9 @@ def cz_channel(qa: QubitNoise, qb: QubitNoise, cn: CouplerNoise, duration_ps: fl
     if cn.cz_depol:
         ch = P.compose(ch, P.depolarize2(cn.cz_depol))
     if cn.cz_phase_err_rad:
-        # exp(i d |11><11|) = exp(i d/4 (I - Z1 - Z2 + Z1 Z2)); twirl -> Z1, Z2, Z1Z2 each sin^2(d/4)
-        p = math.sin(cn.cz_phase_err_rad / 4.0) ** 2
+        # diag(1,1,1,e^{id}) has Pauli coefficients c_ZI = c_IZ = -c_ZZ = (1 - e^{id})/4 (up to sign), so the
+        # exact twirl puts |1 - e^{id}|^2/16 = sin^2(d/2)/4 on each of ZI, IZ, ZZ (valid for any d)
+        p = math.sin(cn.cz_phase_err_rad / 2.0) ** 2 / 4.0
         v = np.zeros(16)
         v[3 * 4 + 0] = p     # Z I
         v[0 * 4 + 3] = p     # I Z
@@ -160,16 +163,17 @@ class RecordFlip:
     tag: str = "readout"
 
 
-def op_noise(kind: str, qubits: tuple[int, ...], snap: NoiseSnapshot) -> list[NoiseLocation]:
-    """Gate noise placed *after* an operation (rule 3)."""
+def op_noise(kind: str, qubits: tuple[int, ...], snap: NoiseSnapshot, phase_q: int = 0) -> list[NoiseLocation]:
+    """Gate noise placed *after* an operation (rule 3). ``phase_q`` is the drive
+    axis of SX/X180 (axis = phase_q * pi/2); it sets the over-rotation error axis."""
     out: list[NoiseLocation] = []
     if kind in ("SX", "X180"):
         q = qubits[0]
         qn = snap.qubits[q]
         if kind == "SX":
-            ch = sq_gate_channel(qn, math.pi / 2, snap.sx_ps, qn.overrot_sx)
+            ch = sq_gate_channel(qn, math.pi / 2, snap.sx_ps, qn.overrot_sx, phase_q)
         else:
-            ch = sq_gate_channel(qn, math.pi, snap.x180_ps, qn.overrot_x180)
+            ch = sq_gate_channel(qn, math.pi, snap.x180_ps, qn.overrot_x180, phase_q)
         out.append(NoiseLocation((q,), ch, kind))
     elif kind == "CZ":
         a, b = qubits

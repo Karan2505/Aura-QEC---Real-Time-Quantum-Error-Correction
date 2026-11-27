@@ -260,11 +260,12 @@ class VirtualQPU:
             g = self._cache_put(key, 1.0 - math.exp(-gap / snap.qubits[q].t1_ps))
         return g
 
-    def _gate_noise(self, snap: N.NoiseSnapshot, kind: str, qubits: tuple[int, ...]) -> list:
-        key = ("g", kind, qubits)
+    def _gate_noise(self, snap: N.NoiseSnapshot, kind: str, qubits: tuple[int, ...], phase_q: int = 0) -> list:
+        axis = phase_q % 2 if kind in ("SX", "X180") else 0      # over-rotation axis: X (even) or Y (odd)
+        key = ("g", kind, qubits, axis)
         locs = self._chan_cache.get(key)
         if locs is None:
-            locs = self._cache_put(key, [(loc.qubits, self._prep(loc.probs)) for loc in N.op_noise(kind, qubits, snap)])
+            locs = self._cache_put(key, [(loc.qubits, self._prep(loc.probs)) for loc in N.op_noise(kind, qubits, snap, axis)])
         return locs
 
     def _apply_op(self, st: _Shots, o: StaticOp, t: int, snap: N.NoiseSnapshot) -> None:
@@ -351,7 +352,7 @@ class VirtualQPU:
             raise HardwareFault(f"unknown op {k}")
         # ---- gate noise -------------------------------------------------------
         if k != "MEASURE":
-            for qs, prepped in self._gate_noise(snap, k, o.qubits):
+            for qs, prepped in self._gate_noise(snap, k, o.qubits, o.phase_q):
                 self._sample_apply(st, qs, prepped)
         # ---- leakage creation ---------------------------------------------------
         if k in ("SX", "X180"):

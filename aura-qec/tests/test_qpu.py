@@ -141,3 +141,23 @@ def test_drift_is_reproducible_and_cosmic_rays_suppress_t1():
     t0, center = a.cosmic_history[-1]
     st = a.state(int(t0 * 1e12) + 1)
     assert st.t1_factor[center] < 0.2
+
+
+def test_overrotation_error_follows_drive_axis():
+    from aura.qpu import noise as N
+    qn = N.QubitNoise(t1_ps=1e30, t2_star_ps=1e30, t2_echo_ps=1e30)
+    x_axis = N.sq_gate_channel(qn, np.pi / 2, 0.0, 0.1, phase_q=0)
+    y_axis = N.sq_gate_channel(qn, np.pi / 2, 0.0, 0.1, phase_q=3)
+    p = np.sin(0.1 * np.pi / 4) ** 2
+    assert x_axis[1] == pytest.approx(p) and x_axis[2] == 0.0
+    assert y_axis[2] == pytest.approx(p) and y_axis[1] == 0.0
+
+
+@pytest.mark.parametrize("d", [0.3, 1.0, np.pi, -np.pi])
+def test_cz_phase_twirl_exact_for_any_phase(d):
+    from aura.qpu import noise as N
+    qn = N.QubitNoise(t1_ps=1e30, t2_star_ps=1e30, t2_echo_ps=1e30)
+    ch = N.cz_channel(qn, qn, N.CouplerNoise(cz_phase_err_rad=d), 0.0)
+    p = np.sin(d / 2) ** 2 / 4                    # |1 - e^{id}|^2 / 16
+    assert ch[3 * 4] == pytest.approx(p) and ch[3] == pytest.approx(p) and ch[15] == pytest.approx(p)
+    assert ch.sum() == pytest.approx(1.0)

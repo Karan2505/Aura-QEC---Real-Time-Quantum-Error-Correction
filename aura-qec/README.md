@@ -20,7 +20,7 @@ virtual QPU ⇄ control system ⇄ AURA-Link (PHY → parser → timestamp → s
 ```bash
 pip install -e ".[test]"        # runtime: numpy, scipy.  tests: pytest, stim, pymatching
 aura selftest                   # ~2 s end-to-end sanity check
-python -m pytest tests          # 106 tests, ~45 s
+python -m pytest tests          # 120 tests, ~80 s
 ```
 
 Python ≥ 3.11.
@@ -35,7 +35,42 @@ aura run --code surface:3 --branching --calibration oracle   # feed-forward (log
 aura link-loopback --shots 200                       # AURA-Link over real UDP sockets
 aura console --calibration oracle                    # dashboard on http://127.0.0.1:8765/
 python examples/03_link_fault_injection.py           # BER, bursts, fibre pull -> erasures + auto-recovery
+aura run --code surface:5 --rounds 5 --decoder rlbp --mode batch --shots 5000 --calibration oracle
+aura train-decoder --code surface:5 --rounds 5 --source device --out rlbp.json   # RL-BP policy from device shots
+python examples/07_rl_decoder.py                     # RL-BP vs BP+OSD vs MWPM: iterations and LER
 ```
+
+## Iterative decoding and RL-BP
+
+`--decoder bposd` is min-sum belief propagation on the detector error model with
+an OSD-0 fallback (any CSS code, including BB codes, which matching cannot
+decode). It never runs more BP iterations than needed:
+
+* a shot with no detection events costs **0 iterations**;
+* a shot leaves BP **at the first iteration whose hard decision explains its
+  syndrome**, so a shot that converges at iteration 3 costs 3, not `bp_max_iter`.
+
+`--decoder rlbp` adds a **reinforcement-learned halting policy**. After every
+iteration it looks at a shot's convergence state (iteration, residual syndrome,
+progress, stall) and decides whether to continue or hand the shot to OSD now.
+The policy learns to recognise runs that will not converge and to cut them short.
+Its reward is the modelled decoder latency (iterations × `bp_iter_ns` + fallback ×
+`osd_ns`) plus a large penalty per logical error. It is trained by fitted
+Q-iteration, on shots from the DEM or from the device itself
+(`aura train-decoder`).
+
+On device shots (12k training / 12k test, `sota`):
+
+| code | decoder | LER | mean BP iterations | p99 |
+|---|---|---|---|---|
+| surface-5, r=5 | BP+OSD (budget 30) | 1.06 % | 5.56 | 30 |
+|  | **RL-BP** | 1.08 % | **2.21 (−60 %)** | **12** |
+|  | MWPM (reference) | 1.08 % | – | – |
+| BB-72, r=6 | BP+OSD (budget 30) | 35.1 % | 21.9 | 30 |
+|  | **RL-BP** | **32.2 %** | **14.0 (−36 %)** | 30 |
+
+See `docs/ARCHITECTURE.md §3a` for the details and the honest comparison with a
+hand-tuned fixed iteration cap.
 
 ```python
 from aura.lab import VirtualLab, LabConfig, PatchConfig
@@ -57,8 +92,9 @@ print(res.summary())
 | `aura.host.calibration` | 10 calibration experiments, robust fitting, dependency graph (bring-up and maintenance), versioned store |
 | `aura.host.console` + `aura.cli` | REST API, live dashboard, `aura` command |
 | `aura.link` | AURA-Link v1.1: 64b/66b PHY, frames + CRC-32C, Frame Parser, Arrival Timestamp Tagger, Sequence Tracker (erasures), Ingress Elastic FIFO, credits, time sync, session, management ARQ, UDP transport |
+| `aura.decoding` | batched min-sum BP with convergence early exit, OSD-0 fallback, RL-learned halting policy (fitted Q-iteration / Q-learning) |
 | `aura.lab` | `VirtualLab`: everything wired together; stream and batch runs |
-| `aura.testbed` | decoder stand-ins (null, oracle, PyMatching) until Layers 2–3 exist; UDP loopback soak test |
+| `aura.testbed` | decoder stand-ins (null, oracle, PyMatching, BP+OSD, RL-BP) until Layers 2–3 exist; UDP loopback soak test |
 
 ## Documentation
 

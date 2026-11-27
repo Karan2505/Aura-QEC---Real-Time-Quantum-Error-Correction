@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
+import scipy.sparse as sp
 
 from .dem import DetectorErrorModel
 
@@ -59,18 +60,11 @@ class PatchManifest:
 
     def detection_events(self, bits_by_acq: np.ndarray) -> np.ndarray:
         """bits_by_acq: (..., num_acq) -> detection events (..., num_detectors)."""
-        b = np.asarray(bits_by_acq, dtype=np.uint8)
-        out = np.zeros(b.shape[:-1] + (len(self.detectors),), dtype=np.uint8)
-        for i, accs in enumerate(self.detectors):
-            out[..., i] = np.bitwise_xor.reduce(b[..., accs], axis=-1) ^ self.det_ref[i]
-        return out
+        return _parities(self, "_det_op", self.detectors, self.det_ref, bits_by_acq)
 
     def observable_flips(self, bits_by_acq: np.ndarray) -> np.ndarray:
-        b = np.asarray(bits_by_acq, dtype=np.uint8)
-        out = np.zeros(b.shape[:-1] + (len(self.observables),), dtype=np.uint8)
-        for i, accs in enumerate(self.observables):
-            out[..., i] = np.bitwise_xor.reduce(b[..., accs], axis=-1) ^ self.obs_ref[i]
-        return out
+        """bits_by_acq: (..., num_acq) -> observable flips (..., num_observables)."""
+        return _parities(self, "_obs_op", self.observables, self.obs_ref, bits_by_acq)
 
     def to_dict(self, include_dem: bool = True) -> dict:
         d = {k: getattr(self, k) for k in (
@@ -88,6 +82,27 @@ class PatchManifest:
         m = cls(**d)
         m.dem = DetectorErrorModel.from_json_dict(dem) if dem else None
         return m
+
+
+def _parities(pm: PatchManifest, cache_attr: str, rows: list[list[int]], ref: list[int],
+              bits_by_acq: np.ndarray) -> np.ndarray:
+    """Parity of each row's acquisition bits XOR its reference, as one sparse
+    matrix product (the operator is built once per manifest and cached)."""
+    b = np.asarray(bits_by_acq, dtype=np.uint8)
+    width = b.shape[-1]
+    op = pm.__dict__.get(cache_attr)
+    if op is None or op[0].shape[1] != width:
+        r = [i for i, accs in enumerate(rows) for _ in accs]
+        c = [a for accs in rows for a in accs]
+        mat = sp.csr_matrix((np.ones(len(c), np.float32), (r, c)), shape=(len(rows), width))
+        op = (mat, np.asarray(ref, np.uint8))
+        pm.__dict__[cache_attr] = op
+    mat, refv = op
+    flat = b.reshape(-1, width)
+    out = (mat @ flat.T.astype(np.float32)).T.astype(np.uint8)
+    out &= 1
+    out ^= refv
+    return out.reshape(b.shape[:-1] + (len(rows),))
 
 
 @dataclass

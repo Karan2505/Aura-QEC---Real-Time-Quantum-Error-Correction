@@ -169,9 +169,12 @@ class Simulator:
 class RealtimeScheduler:
     """Wall-clock implementation of :class:`Scheduler` (background thread).
 
-    Time is read from ``time.monotonic_ns`` (converted to ps).  Callbacks run
-    on a single dispatcher thread, preserving the single-threaded callback
-    model the transport components assume.
+    Time is read from ``time.perf_counter_ns`` (converted to ps): monotonic and
+    high-resolution on every platform.  (``time.monotonic`` is backed by
+    GetTickCount64 on Windows before Python 3.13 -- 15.6 ms resolution, which
+    quantises every timestamp and destabilises the time-sync servo.)
+    Callbacks run on a single dispatcher thread, preserving the single-threaded
+    callback model the transport components assume.
     """
 
     def __init__(self, name: str = "aura-rt"):
@@ -179,13 +182,13 @@ class RealtimeScheduler:
         self._seq = itertools.count()
         self._cv = threading.Condition()
         self._closed = False
-        self._t0 = time.monotonic_ns()
+        self._t0 = time.perf_counter_ns()
         self._thread = threading.Thread(target=self._loop, name=name, daemon=True)
         self._thread.start()
         self.errors: list[BaseException] = []
 
     def now_ps(self) -> int:
-        return (time.monotonic_ns() - self._t0) * 1000
+        return (time.perf_counter_ns() - self._t0) * 1000
 
     def call_later(self, delay_ps: int, callback: Callable[..., Any], *args: Any,
                    priority: int = 0) -> EventHandle:

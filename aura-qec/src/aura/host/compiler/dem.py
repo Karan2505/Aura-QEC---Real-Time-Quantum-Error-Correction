@@ -186,7 +186,7 @@ def generate_dem(program: QpuProgram, detectors: Sequence[Sequence[int]], observ
         k = o.kind
         # ---- gate noise (after the op) ------------------------------------
         if snap is not None and k != "MEASURE":
-            for loc in N.op_noise(k, o.qubits, snap):
+            for loc in N.op_noise(k, o.qubits, snap, o.phase_q):
                 channel(loc.qubits, loc.probs)
         # ---- the op (transpose) -------------------------------------------
         if k == "SX":
